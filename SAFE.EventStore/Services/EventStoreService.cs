@@ -36,9 +36,6 @@ namespace SAFE.EventStore.Services
 
         #endregion Init
         
-
-        // userId/databaseId
-        // userId/databaseId/streamkey
         async Task<List<byte>> GetMdXorName(string plainTextId)
         {
             return await NativeUtils.Sha3HashAsync(plainTextId.ToUtfBytes());
@@ -74,7 +71,7 @@ namespace SAFE.EventStore.Services
                 }
             }
 
-            // Create Self Permissions to Inbox and Archive
+            // Create Self Permissions
             using (var categorySelfPermSetH = await MDataPermissions.NewAsync())
             {
                 await Task.WhenAll(
@@ -397,10 +394,10 @@ namespace SAFE.EventStore.Services
         }
 
         /// <summary>
-        /// Adds a category to the database.
+        /// Adds a stream to the database.
         /// </summary>
         /// <param name="databaseId"></param>
-        /// <param name="category"></param>
+        /// <param name="initBatch">The events of the new stream</param>
         /// <returns></returns>
         async Task CreateNewStreamAsync(string databaseId, EventBatch initBatch)
         {
