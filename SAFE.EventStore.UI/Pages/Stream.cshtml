@@ -1,0 +1,44 @@
+﻿@page "{databaseid}/{streamkey}"
+@model StreamModel
+@{
+    ViewData["Title"] = "Stream details";
+}
+<h2>@ViewData["Title"]</h2>
+<h3>@Model.Message</h3>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>
+                @Html.DisplayNameFor(model => model.Events[0].SequenceNr)
+            </th>
+            <th>
+                @Html.DisplayNameFor(model => model.Events[0].Name)
+            </th>
+            <th>
+                @Html.DisplayNameFor(model => model.Events[0].TimeStamp)
+            </th>
+            
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Events)
+        {
+            <tr>
+                <td>
+                    @Html.DisplayFor(modelItem => item.SequenceNr)
+                </td>
+                <td>
+                    @Html.DisplayFor(modelItem => item.Name)
+                </td>
+                <td>
+                    @Html.DisplayFor(modelItem => item.TimeStamp)
+                </td>
+                <td>
+                    <a asp-page="/Event" asp-route-databaseId="@this.RouteData.Values["databaseId"]" asp-route-streamKey="@this.RouteData.Values["streamKey"]" asp-route-eventId="@item.Id">Details</a> |
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
