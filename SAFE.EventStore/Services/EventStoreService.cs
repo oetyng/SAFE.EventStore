@@ -8,6 +8,7 @@ using SAFE.DotNET.Models;
 using SAFE.DotNET.Native;
 using SAFE.EventStore.Models;
 using SAFE.SystemUtils;
+using System.Collections.Concurrent;
 
 namespace SAFE.EventStore.Services
 {
@@ -81,93 +82,37 @@ namespace SAFE.EventStore.Services
                     MDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kManagePermissions));
 
                 using (var streamTypesPermH = await MDataPermissions.NewAsync())
-                { 
+                {
                     using (var appSignPkH = await Crypto.AppPubSignKeyAsync())
                     {
                         await MDataPermissions.InsertAsync(streamTypesPermH, appSignPkH, categorySelfPermSetH);
                     }
 
-                    // Create a "stream1" MD, with one event in it, and the default entry "type"
-                    using (var stream1_EntriesH = await MDataEntries.NewAsync())
+                    // Create Md for holding categories
+                    var categoriesMDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
+                    await MData.PutAsync(categoriesMDataInfoH, streamTypesPermH, NativeHandle.Zero); // <----------------------------------------------    Commit ------------------------
+
+                    var serializedCategoriesMdInfo = await MDataInfo.SerialiseAsync(categoriesMDataInfoH);
+
+                    // Finally update App Container (store db info to it)
+                    var database = new Database
                     {
-                        var firstEntryInStream1 = "type".ToUtfBytes(); // present in all our mds
-                        var firstValueInStream1 = "stream".ToUtfBytes(); // this md is representing a stream, and thus follows a certain set of conventions
-                        await MDataEntries.InsertAsync(stream1_EntriesH, firstEntryInStream1, firstValueInStream1);
-                        var secondEntryInStream1 = "streamName".ToUtfBytes();
-                        var secondValueInStream1 = "category1".ToUtfBytes();
-                        await MDataEntries.InsertAsync(stream1_EntriesH, secondEntryInStream1, secondValueInStream1);
-                        var thirdEntryInStream1 = "streamId".ToUtfBytes();
-                        var thirdValueInStream1 = "0001".ToUtfBytes(); // 
-                        await MDataEntries.InsertAsync(stream1_EntriesH, thirdEntryInStream1, thirdValueInStream1);
+                        DbId = databaseId,
+                        Categories = new DataArray { Type = "Buffer", Data = serializedCategoriesMdInfo }, // Points to Md holding stream types
+                                                                                                           //Archive = new DataArray {Type = "Buffer", Data = serializedDatabaseMdInfo},
+                                                                                                           //DataEncPk = categoryEncPk.ToHexString(),
+                                                                                                           //DataEncSk = categoryEncSk.ToHexString()
+                    };
 
-                        // First event in stream added
-                        var cmdId = Guid.NewGuid();
-                        var initBatch = new EventBatch($"{"category1"}@0001", cmdId, new List<EventData> { new EventData(new byte[0], Guid.Empty, cmdId, "mockEventClrType", Guid.NewGuid(), "mockEvent", 0, DateTime.UtcNow) });
-                        var jsonBatch = JsonConvert.SerializeObject(initBatch);
-                        var batchKey = $"{initBatch.Body.First().SequenceNumber}@{initBatch.Body.Last().SequenceNumber}";
-                        await MDataEntries.InsertAsync(stream1_EntriesH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
-
-                        #region metadata
-                        //var secondEntryInStream1 = "metadata".ToUtfBytes();
-                        //var metadata = new Dictionary<string, object>
-                        //{
-                        //    { "streamName", "streamType1" },
-                        //    { "streamId", "0001" }
-                        //};
-                        //var secondValueInStream1 = JsonConvert.SerializeObject(metadata).ToUtfBytes();
-                        #endregion metadata
-
-                        var stream1_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                        await MData.PutAsync(stream1_MDataInfoH, streamTypesPermH, stream1_EntriesH); // <----------------------------------------------    Commit ------------------------
-
-                        var serializedStream1_MdInfo = await MDataInfo.SerialiseAsync(stream1_MDataInfoH); // Value
-
-
-                        // Create a "streamType1" MD, with one stream in it ("streamType1@0001")
-                        using (var category1_EntriesH = await MDataEntries.NewAsync())
+                    var serializedDb = JsonConvert.SerializeObject(database);
+                    using (var appContH = await AccessContainer.GetMDataInfoAsync("apps/" + AppSession.AppId)) // appContainerHandle
+                    {
+                        var dbIdCipherBytes = await MDataInfo.EncryptEntryKeyAsync(appContH, databaseId.ToUtfBytes());
+                        var dbCipherBytes = await MDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
+                        using (var appContEntryActionsH = await MDataEntryActions.NewAsync())
                         {
-                            await MDataEntries.InsertAsync(category1_EntriesH, "type".ToUtfBytes(), "category".ToUtfBytes());
-                            await MDataEntries.InsertAsync(category1_EntriesH, "typeName".ToUtfBytes(), "category1".ToUtfBytes());
-                            var streamKey = "category1@0001";
-                            await MDataEntries.InsertAsync(category1_EntriesH, streamKey.ToUtfBytes(), serializedStream1_MdInfo);
-
-                            var category1_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                            await MData.PutAsync(category1_MDataInfoH, streamTypesPermH, category1_EntriesH); // <----------------------------------------------    Commit ------------------------
-
-                            var serializedCategory1_MdInfo = await MDataInfo.SerialiseAsync(category1_MDataInfoH); // Value
-
-
-                            // Create Md for holding stream types, add one example type ("streamType1") which points to an Md which holds all streams of that type
-                            var categoriesMDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                            using (var categoriesEntriesH = await MDataEntries.NewAsync())
-                            {
-                                await MDataEntries.InsertAsync(categoriesEntriesH, "category1".ToUtfBytes(), serializedCategory1_MdInfo);
-                                await MData.PutAsync(categoriesMDataInfoH, streamTypesPermH, categoriesEntriesH); // <----------------------------------------------    Commit ------------------------
-
-                                var serializedCategoriesMdInfo = await MDataInfo.SerialiseAsync(categoriesMDataInfoH);
-
-                                // Finally update App Container (store db info to it)
-                                var database = new Database
-                                {
-                                    DbId = databaseId,
-                                    Categories = new DataArray { Type = "Buffer", Data = serializedCategoriesMdInfo }, // Points to Md holding stream types
-                                                                                                                         //Archive = new DataArray {Type = "Buffer", Data = serializedDatabaseMdInfo},
-                                                                                                                         //DataEncPk = categoryEncPk.ToHexString(),
-                                                                                                                         //DataEncSk = categoryEncSk.ToHexString()
-                                };
-
-                                var serializedDb = JsonConvert.SerializeObject(database);
-                                using (var appContH = await AccessContainer.GetMDataInfoAsync("apps/" + AppSession.AppId)) // appContainerHandle
-                                {
-                                    var dbIdCipherBytes = await MDataInfo.EncryptEntryKeyAsync(appContH, databaseId.ToUtfBytes());
-                                    var dbCipherBytes = await MDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
-                                    using (var appContEntryActionsH = await MDataEntryActions.NewAsync())
-                                    {
-                                        await MDataEntryActions.InsertAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes);
-                                        await MData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
-                                    }
-                                }
-                            }
+                            await MDataEntryActions.InsertAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes);
+                            await MData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
                         }
                     }
                 }
@@ -303,7 +248,7 @@ namespace SAFE.EventStore.Services
 
             var database = JsonConvert.DeserializeObject<Database>(content.ToUtfString());
 
-            // Get all stream types
+            // Get all categories
             List<(List<byte>, List<byte>, ulong)> dbCategoriesEntries;
             using (var dbCategoriesDataInfoH = await MDataInfo.DeserialiseAsync(database.Categories.Data))
             {
@@ -315,15 +260,15 @@ namespace SAFE.EventStore.Services
 
             var categoryEntry = dbCategoriesEntries.Single(s => s.Item1.ToUtfString() == streamName);
 
-            // Get all streams of the type
-            // The stream type md, whose entries contains all streamKeys of the type 
+            // Here we get all streams of the category
+            // We get the category md, whose entries contains all streamKeys of the category
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
             (List<byte>, List<byte>, ulong) streamEntry;
             using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
             {
-                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific stream type
+                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
                 {
-                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this type
+                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
 
                     try
                     {
@@ -342,12 +287,17 @@ namespace SAFE.EventStore.Services
                 {
                     var eventBatchEntries = await MDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
 
-                    foreach (var eventBatchEntry in eventBatchEntries)
-                    {
-                        var jsonBatch = eventBatchEntry.Item2.ToUtfString();
-                        var batch = JsonConvert.DeserializeObject<EventBatch>(jsonBatch);
-                        batches.Add(batch);
-                    }
+                    var bag = new ConcurrentBag<EventBatch>();
+                    var tasks = eventBatchEntries.Select(eventBatchEntry =>
+                        Task.Run(() =>
+                        {
+                            var jsonBatch = eventBatchEntry.Item2.ToUtfString();
+                            var batch = JsonConvert.DeserializeObject<EventBatch>(jsonBatch);
+                            bag.Add(batch);
+                        }));
+
+                    await Task.WhenAll(tasks);
+                    batches.AddRange(bag.OrderBy(c => c.Body.First().SequenceNumber));
                 }
             }
 
@@ -434,7 +384,7 @@ namespace SAFE.EventStore.Services
 
                             var (streamName, streamId) = GetKeyParts(initBatch.StreamKey);
 
-                            // Create a "stream1" MD, with one event in it, and the default entry "type"
+                            // Create an MD, with one event in it, with entry type of "stream"
                             using (var stream_EntriesH = await MDataEntries.NewAsync())
                             {
                                 var firstEntryInStream1 = "type".ToUtfBytes(); // present in all our mds
