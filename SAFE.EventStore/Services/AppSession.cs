@@ -68,9 +68,31 @@ namespace SAFE.EventStore.Services
             IsAuthenticated = false;
         }
 
-        public async Task<string> GenerateAppRequestAsync()
+        async Task<bool> InstallUriAsync()
         {
             State.AppId = "oetyng.apps.safe.eventstore";
+
+            var appInfo = new AppInfo
+            {
+                Id = AppId,
+                Name = "SAFE EventStore",
+                Vendor = "Oetyng",
+                Icon = "some icon",
+                Exec = @"C:\Users\oetyng\SAFEEventStore\SAFE.EventStore.AppAuth.exe", // tested various ways: // @"localhost://p:52794/api/auth?EncodedUrl=test", ,//@"dotnet C:\Users\oetyng\SAFEEventStore\SAFE.EvenStore.AppAuth.dll",
+                Schemes = "safe-b2v0ew5nlmfwchmuc2fmzs5ldmvudhn0b3jl"
+            };
+
+            var installed = await Session.InstallUriAsync(appInfo);
+            
+            Debug.WriteLine($"Installed: {installed}");
+            return installed;
+        }
+
+        public async Task<string> GenerateAppRequestAsync()
+        {
+            if (!await InstallUriAsync())
+                throw new InvalidOperationException();
+
             var authReq = new AuthReq
             {
                 AppContainer = true,

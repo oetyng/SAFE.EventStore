@@ -17,9 +17,21 @@ namespace SAFE.EventStore.UI.Pages
 
         public string AuthUri { get; private set; }
 
+        [BindProperty]
+        public string EncodedUrl { get; set; }
+
         public async Task<IActionResult> OnGetAsync()
         {
             AuthUri = await _service.GenerateAppRequestAsync();
+            if (_service.IsAuthenticated)
+                return RedirectToPage("/Databases/Index");
+            
+            return Page();
+        }
+
+        public async Task<IActionResult> OnPostAsync()
+        {
+            await _service.HandleUrlActivationAsync(EncodedUrl);
             if (_service.IsAuthenticated)
                 return RedirectToPage("/Databases/Index");
 

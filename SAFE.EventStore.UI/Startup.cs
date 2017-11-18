@@ -22,7 +22,7 @@ namespace SAFE.EventStore.UI
         public void ConfigureServices(IServiceCollection services)
         {
             // TODO: read run mode from config
-            var session = new Setup.UISession(mock: true);
+            var session = new Setup.UISession(mock: false);
 
             services.AddSingleton(session);
             services.AddSingleton(new Setup.LogoutService(session));
