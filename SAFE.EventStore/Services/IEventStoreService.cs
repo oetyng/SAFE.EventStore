@@ -7,7 +7,6 @@ namespace SAFE.EventStore.Services
 {
     public interface IEventStoreService
     {
-        
         Task CreateDbAsync(string databaseId);
         void Dispose();
         Task<List<DatabaseId>> GetDatabaseIdsAsync();

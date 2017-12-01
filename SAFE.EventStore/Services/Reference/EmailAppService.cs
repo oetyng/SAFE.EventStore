@@ -5,7 +5,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using Utils;
 using Newtonsoft.Json;
-using SAFE.DotNET.Helpers;
 using SAFE.DotNET.Models;
 using System.Threading;
 using SAFE.DotNET.Native;
@@ -366,14 +365,14 @@ namespace SAFE.DotNET.Services
                     var authGranted = decodeResult.AuthGranted.Value;
                     Debug.WriteLine("Received Auth Granted from Authenticator");
                     // update auth progress message
-                    MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthInProgressMessage);
+                    //MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthInProgressMessage);
                     await Session.AppRegisteredAsync(AppId, authGranted);
                     //if (AuthReconnect)
                     //{
                     //    var encodedAuthRsp = JsonConvert.SerializeObject(authGranted);
                     //    CredentialCache.Store(encodedAuthRsp);
                     //}
-                    MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, string.Empty);
+                    //MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, string.Empty);
                 }
                 else
                 {
@@ -383,7 +382,7 @@ namespace SAFE.DotNET.Services
             catch (Exception ex)
             {
                 //await Application.Current.MainPage.DisplayAlert("Error", $"Description: {ex.Message}", "OK");
-                MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthDeniedMessage);
+                //MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthDeniedMessage);
             }
         }
 

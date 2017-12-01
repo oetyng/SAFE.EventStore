@@ -15,4 +15,8 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Models\Helpers\" />
+  </ItemGroup>
+
 </Project>

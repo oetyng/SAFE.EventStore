@@ -1,6 +1,4 @@
-﻿using SAFE.DotNET;
-using SAFE.DotNET.Helpers;
-using SAFE.DotNET.Native;
+﻿using SAFE.DotNET.Native;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -117,7 +115,6 @@ namespace SAFE.EventStore.Services
                     var authGranted = decodeResult.AuthGranted.Value;
                     Debug.WriteLine("Received Auth Granted from Authenticator");
                     // update auth progress message
-                    MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthInProgressMessage);
                     await Session.AppRegisteredAsync(AppId, authGranted);
                     //if (AuthReconnect)
                     //{
@@ -125,7 +122,6 @@ namespace SAFE.EventStore.Services
                     //    CredentialCache.Store(encodedAuthRsp);
                     //}
                     IsAuthenticated = true;
-                    MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, string.Empty);
                 }
                 else
                     Debug.WriteLine("Decoded Req is not Auth Granted");
@@ -133,7 +129,6 @@ namespace SAFE.EventStore.Services
             catch (Exception ex)
             {
                 //await Application.Current.MainPage.DisplayAlert("Error", $"Description: {ex.Message}", "OK");
-                MessagingCenter.Send(this, MessengerConstants.AuthRequestProgress, AuthDeniedMessage);
             }
         }
 
