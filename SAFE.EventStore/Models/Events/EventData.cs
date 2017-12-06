@@ -21,13 +21,13 @@ namespace SAFE.EventStore.Models
             int sequenceNumber, DateTime timeStamp)
         {
             Payload = payload;
-            CorrelationId = correlationId;
-            CausationId = causationId;
-            EventClrType = eventClrType;
-            Id = id;
-            Name = name;
-            SequenceNumber = sequenceNumber;
-            TimeStamp = timeStamp;
+            MetaData = new MetaData(
+                correlationId,
+                causationId,
+                eventClrType,
+                id,
+                name,
+                sequenceNumber, timeStamp);
         }
 
         /// <summary>
@@ -40,24 +40,12 @@ namespace SAFE.EventStore.Models
         public T GetDeserialized<T>(Func<byte[], string, T> deserialize) where T : Event
         {
             if (_deserialized == null)
-                _deserialized = deserialize(Payload, EventClrType);
+                _deserialized = deserialize(Payload, MetaData.EventClrType);
             return _deserialized as T;
         }
 
         public byte[] Payload { get; private set; }
 
-        public string EventClrType { get; private set; }
-
-        public Guid Id { get; private set; }
-
-        public int SequenceNumber { get; private set; }
-
-        public string Name { get; private set; }
-
-        public DateTime TimeStamp { get; private set; }
-
-        public Guid CorrelationId { get; private set; }
-        
-        public Guid CausationId { get; private set; }
+        public MetaData MetaData { get; private set; }
     }
 }

@@ -12,11 +12,11 @@ namespace SAFE.CQRS.Stream
     {
         ConcurrentDictionary<string, IEventStreamHandler> _cache = new ConcurrentDictionary<string, IEventStreamHandler>();
 
-        IEventStoreService _store;
+        IEventStore _store;
         readonly string _databaseId;
         object _accessLock = new object();
 
-        public EventStreamCache(IEventStoreService store, string databaseId)
+        public EventStreamCache(IEventStore store, string databaseId)
         {
             if (store == null || databaseId == null)
                 throw new ArgumentNullException();
@@ -40,10 +40,10 @@ namespace SAFE.CQRS.Stream
 
         class EventStreamHandler : IEventStreamHandler
         {
-            IEventStoreService _store;
+            IEventStore _store;
             string _databaseId;
 
-            internal EventStreamHandler(IEventStoreService store, string databaseId)
+            internal EventStreamHandler(IEventStore store, string databaseId)
             {
                 _store = store;
                 _databaseId = databaseId;

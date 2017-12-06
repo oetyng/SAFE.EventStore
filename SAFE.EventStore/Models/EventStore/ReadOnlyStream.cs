@@ -17,13 +17,13 @@ namespace SAFE.EventStore.Models
 
             Data = batches
                 .SelectMany(x => x.Body)
-                .OrderBy(x => x.SequenceNumber)
+                .OrderBy(x => x.MetaData.SequenceNumber)
                 .ToList();
 
-            if (Data.Count != Data.Select(x => x.SequenceNumber).Distinct().Count())
+            if (Data.Count != Data.Select(x => x.MetaData.SequenceNumber).Distinct().Count())
                 throw new ArgumentException("Duplicate sequence numbers!");
 
-            if (Data.First().SequenceNumber != 0)
+            if (Data.First().MetaData.SequenceNumber != 0)
                 throw new ArgumentException("Incomplete stream!");
 
             // Use the isInSequnce test done 

@@ -12,11 +12,17 @@ using System.Collections.Concurrent;
 
 namespace SAFE.EventStore.Services
 {
-    public class EventStoreService : IDisposable, IEventStoreService
+    /// <summary>
+    /// This EventSourcing protocol
+    /// stores serialized events in 
+    /// the entries of a MutableData
+    /// representing a stream.
+    /// </summary>
+    public class EventStoreMDProtocol : IDisposable, IEventStore
     {
         #region Init
         
-        public EventStoreService()
+        public EventStoreMDProtocol()
         { }
 
         public void Dispose()
@@ -25,7 +31,7 @@ namespace SAFE.EventStore.Services
             GC.SuppressFinalize(this);
         }
 
-        ~EventStoreService()
+        ~EventStoreMDProtocol()
         {
             FreeState();
         }
@@ -297,7 +303,7 @@ namespace SAFE.EventStore.Services
                         }));
 
                     await Task.WhenAll(tasks);
-                    batches.AddRange(bag.OrderBy(c => c.Body.First().SequenceNumber));
+                    batches.AddRange(bag.OrderBy(c => c.Body.First().MetaData.SequenceNumber));
                 }
             }
 
@@ -327,8 +333,8 @@ namespace SAFE.EventStore.Services
                     await CreateNewStreamAsync(databaseId, batch);
                 else
                 {
-                    var currentVersion = checkExists.Value.Data.Last().SequenceNumber;
-                    var expectedVersion = batch.Body.First().SequenceNumber - 1;
+                    var currentVersion = checkExists.Value.Data.Last().MetaData.SequenceNumber;
+                    var expectedVersion = batch.Body.First().MetaData.SequenceNumber - 1;
                     if (currentVersion != expectedVersion)
                         throw new InvalidOperationException($"Concurrency exception! Expected {expectedVersion}, but found {currentVersion}.");
 
@@ -351,7 +357,7 @@ namespace SAFE.EventStore.Services
         /// <returns></returns>
         async Task CreateNewStreamAsync(string databaseId, EventBatch initBatch)
         {
-            if (initBatch.Body.First().SequenceNumber != 0)
+            if (initBatch.Body.First().MetaData.SequenceNumber != 0)
                 throw new InvalidOperationException("First event in a new stream must start with sequence Nr 0!");
 
             // Get the database
@@ -399,7 +405,7 @@ namespace SAFE.EventStore.Services
 
                                 // First event batch in stream added
                                 var jsonBatch = JsonConvert.SerializeObject(initBatch);
-                                var batchKey = $"{initBatch.Body.First().SequenceNumber}@{initBatch.Body.Last().SequenceNumber}";
+                                var batchKey = $"{initBatch.Body.First().MetaData.SequenceNumber}@{initBatch.Body.Last().MetaData.SequenceNumber}";
                                 await MDataEntries.InsertAsync(stream_EntriesH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
 
                                 #region metadata
@@ -521,7 +527,7 @@ namespace SAFE.EventStore.Services
                     {
                         // First event batch in stream added
                         var jsonBatch = JsonConvert.SerializeObject(batch);
-                        var batchKey = $"{batch.Body.First().SequenceNumber}@{batch.Body.Last().SequenceNumber}";
+                        var batchKey = $"{batch.Body.First().MetaData.SequenceNumber}@{batch.Body.Last().MetaData.SequenceNumber}";
 
                         using (var streamEntryActionsH = await MDataEntryActions.NewAsync())
                         {

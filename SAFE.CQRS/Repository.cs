@@ -51,7 +51,7 @@ namespace SAFE.CQRS
             else
             {
                 var newEvents = stream.Data
-                    .Where(d => d.SequenceNumber > cached.Version)
+                    .Where(d => d.MetaData.SequenceNumber > cached.Version)
                     .Select(x => x.GetDeserialized((b, t) => (Event)b.Parse(t)));
 
                 foreach (var e in newEvents)
