@@ -12,6 +12,12 @@ namespace SAFE.EventStore.Models
         EventData()
         { }
 
+        [JsonProperty("payload")]
+        public byte[] Payload { get; private set; }
+
+        [JsonProperty("metaData")]
+        public MetaData MetaData { get; private set; }
+
         public EventData(byte[] payload,
             Guid correlationId,
             Guid causationId,
@@ -43,9 +49,5 @@ namespace SAFE.EventStore.Models
                 _deserialized = deserialize(Payload, MetaData.EventClrType);
             return _deserialized as T;
         }
-
-        public byte[] Payload { get; private set; }
-
-        public MetaData MetaData { get; private set; }
     }
 }

@@ -7,12 +7,14 @@ namespace SAFE.CQRS
     {
         public Guid Id { get; private set; }
         public Guid TargetId { get; private set; }
-        public Guid CorrelationId { get; internal set; }
+        public int ExpectedVersion { get; private set; }
+        public Guid CorrelationId { get; protected set; }
 
-        public Cmd(Guid targetId)
+        public Cmd(Guid targetId, int expectedVersion)
         {
             TargetId = targetId;
             Id = SequentialGuid.NewGuid();
+            ExpectedVersion = expectedVersion;
         }
     }
 }

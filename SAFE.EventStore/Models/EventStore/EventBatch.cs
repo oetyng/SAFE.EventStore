@@ -19,18 +19,22 @@ namespace SAFE.EventStore.Models
         [JsonProperty("body")]
         public List<EventData> Body { get; private set; }
 
-        [JsonIgnore]
-        public string LocalTime => Convert.ToDateTime(TimeStamp).ToString("f");
+        //[JsonIgnore]
+        //public string LocalTime => Convert.ToDateTime(TimeStamp).ToString("f");
 
-        public EventBatch(string streamKey, Guid causationId, List<EventData> events)
+        [JsonConstructor]
+        EventBatch()
+        { }
+
+        public EventBatch(string streamKey, Guid causationId, List<EventData> body)
         {
-            if (!IsInSequence(events) || events.Count == 0)
-                throw new ArgumentOutOfRangeException(nameof(events));
+            if (!IsInSequence(body) || body.Count == 0)
+                throw new ArgumentOutOfRangeException(nameof(body));
 
-            Body = events;
+            Body = body;
             StreamKey = streamKey;
             CausationId = causationId;
-            TimeStamp = events.Last().MetaData.TimeStamp;
+            TimeStamp = body.Last().MetaData.TimeStamp;
         }
 
         bool IsInSequence(List<EventData> events)

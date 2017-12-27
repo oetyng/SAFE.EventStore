@@ -58,7 +58,7 @@ namespace SAFE.CQRS
         async Task<TAggregate> Locate(Cmd cmd)
         {
             var streamKey = StreamKeyFromCmd(cmd);
-            return await _repo.GetAR<TAggregate>(streamKey);
+            return await _repo.GetAR<TAggregate>(streamKey, cmd.ExpectedVersion);
         }
 
         // The cmd will hold information
@@ -69,8 +69,16 @@ namespace SAFE.CQRS
         // form the StreamKey. (StreamKey = [StreamName]@[StreamId])
         string StreamKeyFromCmd(Cmd cmd)
         {
-            // todo
-            return "SomeStreamKey";
+            // todo: get all types deriving from Aggregate
+            // get all their valid cmds, and build a map
+            // the map could actually be stored on safenet
+            switch(cmd.GetType().Name)
+            {
+                case "AddNote":
+                    return $"NoteBook@{cmd.TargetId}";
+                default:
+                    return "SomeStreamKey";
+            }
         }
     }
 }
