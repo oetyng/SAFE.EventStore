@@ -73,8 +73,8 @@ namespace SAFE.CQRS
     // A cmd type can only ever have one recipient type. (ExampleCmd is only handled by ExampleAggregate).
     public class ExampleCmd : Cmd
     {
-        public ExampleCmd(Guid targetId, int exampleProperty)
-            : base(targetId)
+        public ExampleCmd(Guid targetId, int expectedVersion, int exampleProperty)
+            : base(targetId, expectedVersion)
         {
             ExampleProperty = exampleProperty;
         }

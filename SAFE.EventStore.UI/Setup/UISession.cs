@@ -8,7 +8,7 @@ namespace SAFE.EventStore.UI.Setup
         bool _mock;
 
         IAppSession _sessionInstance;
-        IEventStoreService _storeInstance;
+        IEventStore _storeInstance;
 
         public UISession(bool mock)
         {
@@ -22,7 +22,7 @@ namespace SAFE.EventStore.UI.Setup
         }
 
 
-        public IEventStoreService EventStoreService()
+        public IEventStore EventStoreService()
         {
             if (!Authenticated)
                 throw new InvalidOperationException("Not authenticated.");
@@ -33,7 +33,7 @@ namespace SAFE.EventStore.UI.Setup
             if (_mock)
                 _storeInstance = new MockEventStoreService();
             else
-                _storeInstance = new EventStoreService();
+                _storeInstance = new EventStoreImDProtocol();
 
             return _storeInstance;
         }

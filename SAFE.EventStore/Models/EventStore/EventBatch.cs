@@ -19,27 +19,31 @@ namespace SAFE.EventStore.Models
         [JsonProperty("body")]
         public List<EventData> Body { get; private set; }
 
-        [JsonIgnore]
-        public string LocalTime => Convert.ToDateTime(TimeStamp).ToString("f");
+        //[JsonIgnore]
+        //public string LocalTime => Convert.ToDateTime(TimeStamp).ToString("f");
 
-        public EventBatch(string streamKey, Guid causationId, List<EventData> events)
+        [JsonConstructor]
+        EventBatch()
+        { }
+
+        public EventBatch(string streamKey, Guid causationId, List<EventData> body)
         {
-            if (!IsInSequence(events) || events.Count == 0)
-                throw new ArgumentOutOfRangeException(nameof(events));
+            if (!IsInSequence(body) || body.Count == 0)
+                throw new ArgumentOutOfRangeException(nameof(body));
 
-            Body = events;
+            Body = body;
             StreamKey = streamKey;
             CausationId = causationId;
-            TimeStamp = events.Last().TimeStamp;
+            TimeStamp = body.Last().MetaData.TimeStamp;
         }
 
         bool IsInSequence(List<EventData> events)
         {
             var firstEvent = events.First();
             int[] streamSequence = new int[events.Count];
-            var first = firstEvent.SequenceNumber;
+            var first = firstEvent.MetaData.SequenceNumber;
             for (int i = 0; i < events.Count; i++)
-                streamSequence[i] = events[i].SequenceNumber - first;
+                streamSequence[i] = events[i].MetaData.SequenceNumber - first;
 
             bool isInSequence = streamSequence.SequenceEqual(Enumerable.Range(0, streamSequence.Count())); // useful to have as extension method list.InSequenceBy<int>(x => x.SomeIntProperty); and list.InSequenceByDescending<int>(x => x.SomeIntProperty);
 

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace SAFE.EventStore.UI.Setup
 {
-    class MockEventStoreService : IEventStoreService
+    class MockEventStoreService : IEventStore
     {
         Dictionary<string, Dictionary<string, Dictionary<string, ReadOnlyStream>>> _allDbs = new Dictionary<string, Dictionary<string, Dictionary<string, ReadOnlyStream>>>();
 
@@ -118,7 +118,7 @@ namespace SAFE.EventStore.UI.Setup
             var db = _allDbs[databaseId];
             var (category, streamId) = GetKeyParts(batch.StreamKey);
 
-            var expectedVersion = batch.Body.First().SequenceNumber - 1;
+            var expectedVersion = batch.Body.First().MetaData.SequenceNumber - 1;
 
             var containsCategory = db.ContainsKey(category);
             var containsKey = containsCategory && db[category].ContainsKey(batch.StreamKey);
@@ -136,7 +136,7 @@ namespace SAFE.EventStore.UI.Setup
             }
 
             var stream = _allDbs[databaseId][category][batch.StreamKey];
-            var version = stream.Data.First().SequenceNumber;
+            var version = stream.Data.First().MetaData.SequenceNumber;
             if (version != expectedVersion)
                 return Task.FromResult(Result.Fail<bool>($"Concurrency exception! Expected {expectedVersion} but found {version}."));
 

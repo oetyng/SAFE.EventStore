@@ -7,7 +7,7 @@ namespace SAFE.EventStore.UI.Pages
 {
     public class AuthPageModel : PageModel
     {
-        protected readonly Func<IEventStoreService> _serviceFactory;
+        protected readonly Func<IEventStore> _serviceFactory;
         protected readonly Func<bool> _authenticated;
 
         public bool Authenticated { get => _authenticated(); }

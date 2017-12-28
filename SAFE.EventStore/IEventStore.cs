@@ -3,9 +3,9 @@ using System.Threading.Tasks;
 using SAFE.EventStore.Models;
 using SAFE.SystemUtils;
 
-namespace SAFE.EventStore.Services
+namespace SAFE.EventStore
 {
-    public interface IEventStoreService
+    public interface IEventStore
     {
         Task CreateDbAsync(string databaseId);
         void Dispose();

@@ -30,13 +30,14 @@ namespace SAFE.EventStore.UI.Pages
                 var stream = streamResult.Value;
                 Events = stream.Data.Select(e => new Event
                 {
-                    CausationId = e.CausationId,
-                    CorrelationId = e.CorrelationId,
-                    Id = e.Id, Name = e.Name,
-                    SequenceNr = e.SequenceNumber,
+                    CausationId = e.MetaData.CausationId,
+                    CorrelationId = e.MetaData.CorrelationId,
+                    Id = e.MetaData.Id,
+                    Name = e.MetaData.Name,
+                    SequenceNr = e.MetaData.SequenceNumber,
                     StreamId = stream.StreamId,
                     StreamName = stream.StreamName,
-                    TimeStamp = e.TimeStamp,
+                    TimeStamp = e.MetaData.TimeStamp,
                     Json = e.Payload.GetJson()
                 }).ToList();
 
