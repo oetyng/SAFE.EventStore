@@ -3,15 +3,6 @@ using SAFE.DotNET.Models;
 
 namespace SAFE.EventStore.Models
 {
-    //public struct DataArray
-    //{
-    //    [JsonProperty("type")]
-    //    public string Type { get; set; }
-
-    //    [JsonProperty("data")]
-    //    public List<byte> Data { get; set; }
-    //}
-
     public class Database
     {
         [JsonProperty("database_id")]
@@ -25,5 +16,8 @@ namespace SAFE.EventStore.Models
 
         [JsonProperty("data_enc_pk")]
         public string DataEncPk { get; set; }
+
+        [JsonIgnore]
+        public ulong Version { get; internal set; }
     }
 }

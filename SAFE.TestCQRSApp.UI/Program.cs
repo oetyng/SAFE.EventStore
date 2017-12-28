@@ -44,6 +44,8 @@ namespace SAFE.TestCQRSApp.UI
                 .GetResult();
             if (result.StatusCode == System.Net.HttpStatusCode.OK)
             {
+                if (expectedVersion == -1)
+                    ++expectedVersion;
                 ++expectedVersion;
                 Console.WriteLine("Note saved.");
             }

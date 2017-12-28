@@ -16,7 +16,6 @@ namespace SAFE.EventStore.UI.Controllers
         public NoteController(Setup.UISession session, NoteBookCmdHandler cmdHandler)
             : base(session)
         {
-            var eventStore = session.EventStoreService();
             _cmdHandler = cmdHandler;
         }
 
@@ -40,7 +39,7 @@ namespace SAFE.EventStore.UI.Controllers
                 if (!ModelState.IsValid)
                     return BadRequest();
 
-                var current = SystemUtils.SystemTime.UtcNow.ToString("yyyyMMdd HH");
+                var current = SystemUtils.SystemTime.UtcNow.ToString("yyyyMMdd HH:mm");
                 var targetId = current.ToDeterministicGuid();
                 var result = await _cmdHandler.Handle(new AddNote(targetId, model.ExpectedVersion, model.Note));
 

@@ -33,7 +33,7 @@ namespace SAFE.EventStore.UI.Setup
             if (_mock)
                 _storeInstance = new MockEventStoreService();
             else
-                _storeInstance = new EventStoreMDProtocol();
+                _storeInstance = new EventStoreImDProtocol();
 
             return _storeInstance;
         }
