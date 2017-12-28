@@ -9,6 +9,7 @@ To start using event sourcing as a database solution - for parts of, or entire a
 your .NET project, and have a complete framework for storing and retrieving data as events in streams.
 To have a graphical UI for the DB management, access this from the webapp running on localhost.
 
-Currently hardcoded to use a mock eventstore.
+Can be used both with a mock eventstore, and with the real SAFENetwork storage.
 This can be changed in EventStore.UI project, Startup.cs class. 
-But currently storing in the actual alpha-2 SAFE network, will not work as the connection with native libs is not yet completed.
+
+Storing in the actual alpha-2 SAFE network can be tried with the NoteBook example.
