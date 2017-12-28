@@ -27,22 +27,32 @@ namespace SAFE.CQRS
         /// <typeparam name="T"></typeparam>
         /// <param name="streamKey">[stream name]@[guid id]</param>
         /// <returns></returns>
-        public async Task<T> GetAR<T>(string streamKey) where T : Aggregate
+        public async Task<T> GetAR<T>(string streamKey, int expectedVersion) where T : Aggregate
         {
             var reader = _streamCache.GetStreamHandler(streamKey);
             var streamResult = await reader.GetStreamAsync(streamKey); // todo: pass in cached state version, and only load newer versions
-            // todo, handle no exist
+
+            var expectedAny = expectedVersion > -1; // -1 means stream does not exist
+
+            if (expectedAny && streamResult.Error)
+                throw new Exception(streamResult.ErrorMsg);
+            else if (!expectedAny && streamResult.OK)
+                throw new Exception("Stream already exists!");
+
             var stream = streamResult.Value;
 
             if (!_currentStateCache.TryGetValue(streamKey, out Aggregate cached))
             {
                 var ar = Activator.CreateInstance<T>();
 
-                var events = stream.Data
-                    .Select(x => x.GetDeserialized((b, t) => (Event)b.Parse(t)));
+                if (expectedAny)
+                {
+                    var events = stream.Data
+                        .Select(x => x.GetDeserialized((b, t) => (Event)b.Parse(t)));
 
-                foreach (var e in events)
-                    ar.BuildFromHistory(e);
+                    foreach (var e in events)
+                        ar.BuildFromHistory(e);
+                }
 
                 _currentStateCache[streamKey] = ar;
 
@@ -57,6 +67,10 @@ namespace SAFE.CQRS
                 foreach (var e in newEvents)
                     cached.BuildFromHistory(e);
             }
+
+            // reconsider the location for these lines
+            if (cached.Version != expectedVersion) // protects AR from changes based on stale state.
+                throw new InvalidOperationException($"Expected version {expectedVersion}, but stream has version {cached.Version}.");
 
             return (T)cached;
         }

@@ -10,6 +10,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SAFE.EventStore\SAFE.EventStore.csproj" />
+    <ProjectReference Include="..\SAFE.TestCQRSApp\SAFE.TestCQRSApp.csproj" />
     <ProjectReference Include="..\SAFE.Utils\SAFE.Utils.csproj" />
   </ItemGroup>
 </Project>

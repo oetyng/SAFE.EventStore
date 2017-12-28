@@ -1,9 +1,9 @@
 ﻿using SAFE.EventStore;
 using SAFE.EventStore.Models;
-using SAFE.EventStore.Services;
 using SAFE.SystemUtils;
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace SAFE.CQRS.Stream
@@ -31,6 +31,11 @@ namespace SAFE.CQRS.Stream
             {
                 if (!_cache.TryGetValue(streamKey, out IEventStreamHandler stream))
                 {
+                    // create db if not exists
+                    var dbs = _store.GetDatabaseIdsAsync().GetAwaiter().GetResult();
+                    if (!dbs.Any(d => d.Name == _databaseId))
+                        _store.CreateDbAsync(_databaseId).GetAwaiter().GetResult();
+
                     stream = new EventStreamHandler(_store, _databaseId);
                     _cache[streamKey] = stream;
                 }
