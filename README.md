@@ -13,3 +13,4 @@ Can be used both with a mock eventstore, and with the real SAFENetwork storage.
 This can be changed in EventStore.UI project, Startup.cs class. 
 
 Storing in the actual alpha-2 SAFE network can be tried with the NoteBook example.
+Requires SAFE Browser v0.6.0 to to authorize the app: https://github.com/maidsafe/safe_browser/releases/tag/alpha-2
