@@ -22,6 +22,7 @@ namespace SAFE.EventStore.Services
     /// </summary>
     public class EventStoreImDProtocol : IDisposable, IEventStore
     {
+        const string VERSION_KEY = "version";
         const string METADATA_KEY = "metadata";
         const string PROTOCOL = "IData";
 
@@ -223,6 +224,59 @@ namespace SAFE.EventStore.Services
         /// <param name="databaseId">The databae to search in.</param>
         /// <param name="streamKey">The key to the specific stream instance, (in format [category]@[guid])</param>
         /// <returns>The entire stream with all events.</returns>
+        public async Task<(int, ulong)> GetStreamVersionAsync(string databaseId, string streamKey)
+        {
+            var (streamName, streamId) = GetKeyParts(streamKey);
+            var batches = new List<EventBatch>();
+
+            var database = await GetDataBase(databaseId);
+            var dbCategoriesEntries = await GetCategoriesEntries(database); // Get all categories
+            var categoryEntry = dbCategoriesEntries.SingleOrDefault(s => s.Item1.ToUtfString() == streamName);
+            if (categoryEntry.Item1 == null || categoryEntry.Item2 == null)
+                return (-1, 0); // i.e. does not exist
+
+            // Here we get all streams of the category
+            // We get the category md, whose entries contains all streamKeys of the category
+            // (up to 998 though, and then the next 998 can be found when following link in key "next")
+            (List<byte>, List<byte>, ulong) streamEntry;
+            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
+            {
+                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
+                {
+                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
+
+                    try
+                    {
+                        streamEntry = streams.First(s => s.Item1.ToUtfString() == streamKey); // find the instance matching this streamKey
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        return (-1, 0); // i.e. does not exist
+                    }
+                }
+            }
+
+            using (var stream_MDataInfoH = await MDataInfo.DeserialiseAsync(streamEntry.Item2))
+            {
+                using (var streamDataEntH = await MData.ListEntriesAsync(stream_MDataInfoH)) // get the entries of this specific stream instance
+                {
+                    var eventBatchEntries = await MDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
+                    
+                    var entry = eventBatchEntries.First(e => VERSION_KEY == e.Item1.ToUtfString());
+                    var versionString = entry.Item2.ToUtfString();
+                    var version = int.Parse(versionString);
+                    return (version, entry.Item3);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retrieves the stream,
+        /// including all events in it.
+        /// </summary>
+        /// <param name="databaseId">The databae to search in.</param>
+        /// <param name="streamKey">The key to the specific stream instance, (in format [category]@[guid])</param>
+        /// <returns>The entire stream with all events.</returns>
         public async Task<Result<ReadOnlyStream>> GetStreamAsync(string databaseId, string streamKey)
         {
             var (streamName, streamId) = GetKeyParts(streamKey);
@@ -265,7 +319,8 @@ namespace SAFE.EventStore.Services
                     var tasks1 = eventBatchEntries.Select(eventBatchEntry =>
                         Task.Run(async () => // foreach event batch in stream
                         {
-                            if (METADATA_KEY == eventBatchEntry.Item1.ToUtfString())
+                            var key = eventBatchEntry.Item1.ToUtfString();
+                            if (METADATA_KEY == key || VERSION_KEY == key)
                                 return;
                             var jsonBatch = eventBatchEntry.Item2.ToUtfString();
                             var batch = JsonConvert.DeserializeObject<StoredEventBatch>(jsonBatch);
@@ -332,7 +387,8 @@ namespace SAFE.EventStore.Services
             var seReaderHandle = await IData.FetchSelfEncryptorAsync(stored.DataMapAddress);
             var len = await IData.SizeAsync(seReaderHandle);
             var readData = await IData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
-            return new EventData(readData.ToArray(),
+            
+            var eventData = new EventData(readData.ToArray(),
                 stored.MetaData.CorrelationId,
                 stored.MetaData.CausationId,
                 stored.MetaData.EventClrType,
@@ -340,12 +396,21 @@ namespace SAFE.EventStore.Services
                 stored.MetaData.Name,
                 stored.MetaData.SequenceNumber,
                 stored.MetaData.TimeStamp);
+
+            await IData.SelfEncryptorReaderFreeAsync(seReaderHandle);
+
+            return eventData;
         }
 
         /// <summary>
         /// Stores a batch to the stream.
         /// Will protect stream integrity
         /// with regards to version.
+        /// 
+        /// TODO: We need to return some richer model
+        /// so that the outer scope can distinguish between version exception
+        /// and other exceptions. This is needed so that ouoter scope can 
+        /// load the new events, apply to state and retry the cmd.
         /// </summary>
         /// <param name="databaseId"></param>
         /// <param name="streamKey"></param>
@@ -359,17 +424,16 @@ namespace SAFE.EventStore.Services
             // a version number to supply to the network when mutating the MD.
             try
             {
-                var checkExists = await GetStreamAsync(databaseId, batch.StreamKey);
-                if (checkExists.Error)
+                var (streamVersion, mdEntryVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
+                if (streamVersion == -1)
                     await CreateNewStreamAsync(databaseId, batch);
                 else
                 {
-                    var currentVersion = checkExists.Value.Data.Last().MetaData.SequenceNumber;
                     var expectedVersion = batch.Body.First().MetaData.SequenceNumber - 1;
-                    if (currentVersion != expectedVersion)
-                        throw new InvalidOperationException($"Concurrency exception! Expected {expectedVersion}, but found {currentVersion}.");
+                    if (streamVersion != expectedVersion)
+                        throw new InvalidOperationException($"Concurrency exception! Expected stream version {expectedVersion}, but found {streamVersion}.");
 
-                    return await StoreToExistingStream(databaseId, batch);
+                    return await StoreToExistingStream(databaseId, batch, mdEntryVersion); // todo: distinguish MD version exception result from other errors
                 }
 
                 return Result.OK(true);
@@ -433,7 +497,10 @@ namespace SAFE.EventStore.Services
                         var batchKey = GetBatchKey(initBatch);
                         var jsonBatch = await GetJsonBatch(initBatch); // NB: stores to Immutable data!
                         await MDataEntries.InsertAsync(stream_EntriesH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
-                        
+
+                        var versionKey = VERSION_KEY.ToUtfBytes();
+                        await MDataEntries.InsertAsync(stream_EntriesH, versionKey, initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes());
+
                         var stream_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
                         await MData.PutAsync(stream_MDataInfoH, streamPermH, stream_EntriesH); // <----------------------------------------------    Commit ------------------------
 
@@ -454,10 +521,9 @@ namespace SAFE.EventStore.Services
                             }
                         }
 
-                        #region Create Category MD
-
                         using (var category_EntriesH_1 = await MDataEntries.NewAsync())
                         {
+                            #region Create Category MD
                             var catMetadataKey = METADATA_KEY.ToUtfBytes();
                             var catMetadata = new MDMetaData
                             {
@@ -506,15 +572,15 @@ namespace SAFE.EventStore.Services
                                         await MData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
                                     }
                                 }
-                                #endregion Insert new category to Stream Categories Directory MD
                             }
+                            #endregion Insert new category to Stream Categories Directory MD
                         }
                     }
                 }
             }
         }
 
-        async Task<Result<bool>> StoreToExistingStream(string databaseId, EventBatch batch)
+        async Task<Result<bool>> StoreToExistingStream(string databaseId, EventBatch batch, ulong mdEntryVersion)
         {
             var database = await GetDataBase(databaseId); // Get the database
             var dbCategoriesEntries = await GetCategoriesEntries(database); // Get all categories
@@ -549,14 +615,41 @@ namespace SAFE.EventStore.Services
             {
                 var batchKey = GetBatchKey(batch);
                 var jsonBatch = await GetJsonBatch(batch); // NB: stores to Immutable data!
-
+                var newStreamVersion = batch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes();
+                var newMdEntryVersion = mdEntryVersion + 1;
                 using (var streamEntryActionsH = await MDataEntryActions.NewAsync())
                 {
                     // create the insert action
                     await MDataEntryActions.InsertAsync(streamEntryActionsH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
+                    await MDataEntryActions.UpdateAsync(streamEntryActionsH, VERSION_KEY.ToUtfBytes(), newStreamVersion, newMdEntryVersion);
+                    // mdEntryVersion gives proper concurrency management of writes to streams.
+                    // We can now have multiple concurrent processes writing to the same stream and maintain version sequence intact
 
-                    // Finally update md (store batch to it)
-                    await MData.MutateEntriesAsync(stream_MDataInfoH, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                    try
+                    {
+                        // Finally update md (store batch to it)
+                        await MData.MutateEntriesAsync(stream_MDataInfoH, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                    }
+                    catch(Exception ex)
+                    {
+                        if (ex.Message.Contains("InvalidSuccessor"))
+                        {
+                            var (_, mdVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
+                            return Result.Fail<bool>($"Concurrency exception! Expected MD entry version {mdEntryVersion} is not valid. Current version is {mdVersion}.");
+                        }
+                        return Result.Fail<bool>(ex.Message);
+                    }
+                    
+
+                    // the exception thrown from MutateEntriesAsync when wrong mdEntryVersion entered (i.e. stream modified since last read)
+                    // will have to be handled by the outer scope. Preferred way is to load latest version of stream (i.e. load new events)
+                    // and then apply the cmd to the aggregate again. This becomes a bit of a problem in case of doing outgoing requests from within the aggregate
+                    // as we might not want to do those requests again (depending on their idempotency at the remote recipient).
+                    // implementing logic where an outbound non-idempotent request has to be done, will be risky unless managed.
+                    // currently not aware of a well established pattern for this
+                    // one way could be to run it over multiple cmds, so that we first set the AR to be in a receiving state, 
+                    // => (SetReceiving), from here it should reject additional SetReceiving cmds, and only accept 
+                    // the cmd which performs the outbound request, if it is issued by the same causer (i.e. making it single threaded).
                 }
             }
 
@@ -590,13 +683,10 @@ namespace SAFE.EventStore.Services
         async Task<List<byte>> StoreImmutableData(byte[] payload)
         {
             var cipherOptHandle = await CipherOpt.NewPlaintextAsync();
-            var seHandle = await IData.NewSelfEncryptorAsync();
-            await IData.WriteToSelfEncryptorAsync(seHandle, payload.ToList());
-            var dataMapAddress = await IData.CloseSelfEncryptorAsync(seHandle, cipherOptHandle);
-            //var seReaderHandle = await IData.FetchSelfEncryptorAsync(dataMapAddress);
-            //var len = await IData.SizeAsync(seReaderHandle);
-            //var readData = await IData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
-            
+            var seWriterHandle = await IData.NewSelfEncryptorAsync();
+            await IData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
+            var dataMapAddress = await IData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
+            //await IData.SelfEncryptorWriterFreeAsync(seWriterHandle);
             return dataMapAddress;
         }
 

@@ -5,7 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\repos\Private\SAFE.DotNET\SAFE.DotNET\SAFE.DotNET.csproj" />
+    <ProjectReference Include="..\..\SAFE.DotNET\SAFE.DotNET\SAFE.DotNET.csproj" />
     <ProjectReference Include="..\SAFE.Utils\SAFE.Utils.csproj" />
   </ItemGroup>
 
