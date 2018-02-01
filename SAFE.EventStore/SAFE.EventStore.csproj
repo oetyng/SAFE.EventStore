@@ -15,6 +15,9 @@
     <Reference Include="SAFE.DotNET">
       <HintPath>..\..\..\SAFE.DotNET\SAFE.DotNET\bin\Debug\netstandard2.0\SAFE.DotNET.dll</HintPath>
     </Reference>
+    <Reference Include="SAFE.DotNet.Utils">
+      <HintPath>..\..\..\SAFE.DotNET\SAFE.DotNET.Auth\bin\Debug\netstandard2.0\SAFE.DotNet.Utils.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

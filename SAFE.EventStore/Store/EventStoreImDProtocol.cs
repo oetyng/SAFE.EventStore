@@ -713,11 +713,19 @@ namespace SAFE.EventStore.Services
             return batchKey;
         }
 
-        (string, Guid) GetKeyParts(string streamKey)
+        //(string, Guid) GetKeyParts(string streamKey)
+        //{
+        //    var source = streamKey.Split('@');
+        //    var streamName = source[0];
+        //    var streamId = new Guid(source[1]);
+        //    return (streamName, streamId);
+        //}
+
+        (string, long) GetKeyParts(string streamKey)
         {
             var source = streamKey.Split('@');
             var streamName = source[0];
-            var streamId = new Guid(source[1]);
+            var streamId = long.Parse(source[1]);
             return (streamName, streamId);
         }
 
