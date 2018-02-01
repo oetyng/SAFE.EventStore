@@ -384,22 +384,22 @@ namespace SAFE.EventStore.Services
 
         async Task<EventData> GetEventDataFromAddress(StoredEvent stored)
         {
-            var seReaderHandle = await IData.FetchSelfEncryptorAsync(stored.DataMapAddress);
-            var len = await IData.SizeAsync(seReaderHandle);
-            var readData = await IData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
-            
-            var eventData = new EventData(readData.ToArray(),
-                stored.MetaData.CorrelationId,
-                stored.MetaData.CausationId,
-                stored.MetaData.EventClrType,
-                stored.MetaData.Id,
-                stored.MetaData.Name,
-                stored.MetaData.SequenceNumber,
-                stored.MetaData.TimeStamp);
+            using (var seReaderHandle = await IData.FetchSelfEncryptorAsync(stored.DataMapAddress))
+            {
+                var len = await IData.SizeAsync(seReaderHandle);
+                var readData = await IData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
 
-            await IData.SelfEncryptorReaderFreeAsync(seReaderHandle);
+                var eventData = new EventData(readData.ToArray(),
+                    stored.MetaData.CorrelationId,
+                    stored.MetaData.CausationId,
+                    stored.MetaData.EventClrType,
+                    stored.MetaData.Id,
+                    stored.MetaData.Name,
+                    stored.MetaData.SequenceNumber,
+                    stored.MetaData.TimeStamp);
 
-            return eventData;
+                return eventData;
+            }
         }
 
         /// <summary>
@@ -530,7 +530,7 @@ namespace SAFE.EventStore.Services
                                 { "type", "category" },
                                 { "typeName", streamName }
                             }.Json().ToUtfBytes();
-                            await MDataEntries.InsertAsync(stream_EntriesH, catMetadataKey, catMetadata);
+                            await MDataEntries.InsertAsync(category_EntriesH_1, catMetadataKey, catMetadata);
                             await MDataEntries.InsertAsync(category_EntriesH_1, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
 
                             var category_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
@@ -682,12 +682,16 @@ namespace SAFE.EventStore.Services
         // returns data map address
         async Task<List<byte>> StoreImmutableData(byte[] payload)
         {
-            var cipherOptHandle = await CipherOpt.NewPlaintextAsync();
-            var seWriterHandle = await IData.NewSelfEncryptorAsync();
-            await IData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
-            var dataMapAddress = await IData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
-            //await IData.SelfEncryptorWriterFreeAsync(seWriterHandle);
-            return dataMapAddress;
+            using (var cipherOptHandle = await CipherOpt.NewPlaintextAsync())
+            {
+                using (var seWriterHandle = await IData.NewSelfEncryptorAsync())
+                {
+                    await IData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
+                    var dataMapAddress = await IData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
+                    //await IData.SelfEncryptorWriterFreeAsync(seWriterHandle);
+                    return dataMapAddress;
+                }
+            }
         }
 
         class StoredEventBatch : List<StoredEvent>

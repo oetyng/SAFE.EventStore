@@ -26,13 +26,7 @@ namespace SAFE.EventStore.UI
 
             services.AddSingleton(session);
             services.AddSingleton(new Setup.LogoutService(session));
-
-            // Test app
-            Func<TestCQRSApp.NoteBookCmdHandler> cmdHandler = () => 
-                new TestCQRSApp.NoteBookCmdHandler(new CQRS.Repository(new CQRS.Stream.EventStreamCache(session.EventStoreService(), "Library")));
-            services.AddSingleton((p) => cmdHandler());
-            // Test app
-
+            
             services.AddMvc();
         }
 

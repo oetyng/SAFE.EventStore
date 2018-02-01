@@ -19,6 +19,8 @@ namespace SAFE.CQRS
             _streamCache = streamCache;
         }
 
+        public const int AnyVersion = -999;
+        public const int NoStream = -1;
         /// <summary>
         /// Caches instances.
         /// Checks network for new events, 
@@ -32,11 +34,12 @@ namespace SAFE.CQRS
             var reader = _streamCache.GetStreamHandler(streamKey);
             var streamResult = await reader.GetStreamAsync(streamKey); // todo: pass in cached state version, and only load newer versions
 
-            var expectedAny = expectedVersion > -1; // -1 means stream does not exist
+            var anyVersion = expectedVersion == AnyVersion;
+            var expectedAny = expectedVersion > NoStream; // -1 means stream does not exist
 
             if (expectedAny && streamResult.Error)
                 throw new Exception(streamResult.ErrorMsg);
-            else if (!expectedAny && streamResult.OK)
+            else if (!anyVersion && !expectedAny && streamResult.OK)
                 throw new Exception("Stream already exists!");
 
             var stream = streamResult.Value;
@@ -69,7 +72,7 @@ namespace SAFE.CQRS
             }
 
             // reconsider the location for these lines
-            if (cached.Version != expectedVersion) // protects AR from changes based on stale state.
+            if (!anyVersion && cached.Version != expectedVersion) // protects AR from changes based on stale state.
                 throw new InvalidOperationException($"Expected version {expectedVersion}, but stream has version {cached.Version}.");
 
             return (T)cached;
