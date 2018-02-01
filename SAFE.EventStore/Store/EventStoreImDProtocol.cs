@@ -9,6 +9,8 @@ using SAFE.DotNET.Native;
 using SAFE.EventStore.Models;
 using SAFE.SystemUtils;
 using System.Collections.Concurrent;
+using SAFE.EventSourcing.Models;
+using SAFE.EventSourcing;
 
 namespace SAFE.EventStore.Services
 {

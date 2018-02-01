@@ -5,8 +5,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\SAFE.DotNET\SAFE.DotNET\SAFE.DotNET.csproj" />
-    <ProjectReference Include="..\SAFE.Utils\SAFE.Utils.csproj" />
+    <PackageReference Include="Newtonsoft.Json" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="SAFE.DEC">
+      <HintPath>..\..\SAFE.DEC\SAFE.DEC\bin\Debug\netstandard2.0\SAFE.DEC.dll</HintPath>
+    </Reference>
+    <Reference Include="SAFE.DotNET">
+      <HintPath>..\..\..\SAFE.DotNET\SAFE.DotNET\bin\Debug\netstandard2.0\SAFE.DotNET.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
