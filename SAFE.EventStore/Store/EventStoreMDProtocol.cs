@@ -223,7 +223,7 @@ namespace SAFE.EventStore.Services
         /// <param name="databaseId">The databae to search in.</param>
         /// <param name="streamKey">The key to the specific stream instance, (in format [category]@[guid])</param>
         /// <returns>The entire stream with all events.</returns>
-        public async Task<Result<ReadOnlyStream>> GetStreamAsync(string databaseId, string streamKey)
+        public async Task<Result<ReadOnlyStream>> GetStreamAsync(string databaseId, string streamKey, int newSinceVersion = -1)
         {
             var (streamName, streamId) = GetKeyParts(streamKey);
             var batches = new List<EventBatch>();
@@ -267,7 +267,14 @@ namespace SAFE.EventStore.Services
                     var tasks = eventBatchEntries.Select(eventBatchEntry =>
                         Task.Run(() =>
                         {
-                            if (nonBatchKeys.Contains(eventBatchEntry.Item1.ToUtfString()))
+                            var key = eventBatchEntry.Item1.ToUtfString();
+
+                            // only fetch events more recent than version passed as argument
+                            var versionRange = key.Split('@');
+                            if (newSinceVersion >= int.Parse(versionRange.Last()))
+                                return; // this will speed up retrieval when we have a cached version of the stream locally (as we only request new events since last version)
+
+                            if (nonBatchKeys.Contains(key))
                                 return;
                             var jsonBatch = eventBatchEntry.Item2.ToUtfString();
                             var batch = JsonConvert.DeserializeObject<EventBatch>(jsonBatch);
@@ -279,8 +286,10 @@ namespace SAFE.EventStore.Services
                 }
             }
 
-            var stream = new ReadOnlyStream(streamName, streamId, batches); // also checks integrity of data structure (with regards to sequence nr)
-            return Result.OK(stream);
+            if (batches.Count == 0)
+                return Result.OK((ReadOnlyStream)new EmptyStream(streamName, streamId));
+            else
+                return Result.OK((ReadOnlyStream)new PopulatedStream(streamName, streamId, batches)); // also checks integrity of data structure (with regards to sequence nr)
         }
 
         async Task<Database> GetDataBase(string databaseId)
