@@ -29,17 +29,45 @@ namespace SAFE.EventStore.Services
         const string PROTOCOL = "IData";
 
         readonly string _protocolId = $"{PROTOCOL}/";
-
-        readonly string AppContainerPath = $"apps/{AppSession.AppId}";
+        readonly string AppContainerPath;
 
         string DbIdForProtocol(string databaseId)
         {
             return $"{_protocolId}{databaseId}";
         }
+
         #region Init
 
-        public EventStoreImDProtocol()
-        { }
+        Session _session;
+        MDataInfo _mDataInfo;
+        MData _mData;
+        MDataPermissionSet _mDataPermissionSet;
+        MDataPermissions _mDataPermissions;
+        Crypto _crypto;
+        AccessContainer _accessContainer;
+        MDataEntryActions _mDataEntryActions;
+        MDataKeys _mDataKeys;
+        MDataEntries _mDataEntries;
+        IData _iData;
+        CipherOpt _cipherOpt;
+
+        public EventStoreImDProtocol(string appId, Session session)
+        {
+            AppContainerPath = $"apps/{appId}";
+
+            _session = session;
+            _mDataInfo = new MDataInfo(session);
+            _mData = new MData(session);
+            _mDataPermissionSet = new MDataPermissionSet(session);
+            _mDataPermissions = new MDataPermissions(session);
+            _crypto = new Crypto(session);
+            _accessContainer = new AccessContainer(session);
+            _mDataEntryActions = new MDataEntryActions(session);
+            _mDataKeys = new MDataKeys(session);
+            _mDataEntries = new MDataEntries(session);
+            _iData = new IData(session);
+            _cipherOpt = new CipherOpt(session);
+        }
 
         public void Dispose()
         {
@@ -54,7 +82,7 @@ namespace SAFE.EventStore.Services
 
         void FreeState()
         {
-            Session.FreeApp();
+            _session.FreeApp();
         }
 
         #endregion Init
@@ -74,12 +102,12 @@ namespace SAFE.EventStore.Services
 
             // Check if account exits first and return error
             var dstPubIdDigest = await GetMdXorName(databaseId);
-            using (var dstPubIdMDataInfoH = await MDataInfo.NewPublicAsync(dstPubIdDigest, 15001))
+            using (var dstPubIdMDataInfoH = await _mDataInfo.NewPublicAsync(dstPubIdDigest, 15001))
             {
                 var accountExists = false;
                 try
                 {
-                    var keysH = await MData.ListKeysAsync(dstPubIdMDataInfoH);
+                    var keysH = await _mData.ListKeysAsync(dstPubIdMDataInfoH);
                     keysH.Dispose();
                     accountExists = true;
                 }
@@ -94,26 +122,26 @@ namespace SAFE.EventStore.Services
             }
 
             // Create Self Permissions
-            using (var categorySelfPermSetH = await MDataPermissionSet.NewAsync())
+            using (var categorySelfPermSetH = await _mDataPermissionSet.NewAsync())
             {
                 await Task.WhenAll(
-                    MDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kInsert),
-                    MDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kUpdate),
-                    MDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kDelete),
-                    MDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kManagePermissions));
+                    _mDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kInsert),
+                    _mDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kUpdate),
+                    _mDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kDelete),
+                    _mDataPermissionSet.AllowAsync(categorySelfPermSetH, MDataAction.kManagePermissions));
 
-                using (var streamTypesPermH = await MDataPermissions.NewAsync())
+                using (var streamTypesPermH = await _mDataPermissions.NewAsync())
                 {
-                    using (var appSignPkH = await Crypto.AppPubSignKeyAsync())
+                    using (var appSignPkH = await _crypto.AppPubSignKeyAsync())
                     {
-                        await MDataPermissions.InsertAsync(streamTypesPermH, appSignPkH, categorySelfPermSetH);
+                        await _mDataPermissions.InsertAsync(streamTypesPermH, appSignPkH, categorySelfPermSetH);
                     }
 
                     // Create Md for holding categories
-                    var categoriesMDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                    await MData.PutAsync(categoriesMDataInfoH, streamTypesPermH, NativeHandle.Zero); // <----------------------------------------------    Commit ------------------------
+                    var categoriesMDataInfoH = await _mDataInfo.RandomPrivateAsync(15001);
+                    await _mData.PutAsync(categoriesMDataInfoH, streamTypesPermH, NativeHandle.Zero); // <----------------------------------------------    Commit ------------------------
 
-                    var serializedCategoriesMdInfo = await MDataInfo.SerialiseAsync(categoriesMDataInfoH);
+                    var serializedCategoriesMdInfo = await _mDataInfo.SerialiseAsync(categoriesMDataInfoH);
 
                     // Finally update App Container (store db info to it)
                     var database = new Database
@@ -126,14 +154,14 @@ namespace SAFE.EventStore.Services
                     };
 
                     var serializedDb = JsonConvert.SerializeObject(database);
-                    using (var appContH = await AccessContainer.GetMDataInfoAsync(AppContainerPath)) // appContainerHandle
+                    using (var appContH = await _accessContainer.GetMDataInfoAsync(AppContainerPath)) // appContainerHandle
                     {
-                        var dbIdCipherBytes = await MDataInfo.EncryptEntryKeyAsync(appContH, database.DbId.ToUtfBytes());
-                        var dbCipherBytes = await MDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
-                        using (var appContEntryActionsH = await MDataEntryActions.NewAsync())
+                        var dbIdCipherBytes = await _mDataInfo.EncryptEntryKeyAsync(appContH, database.DbId.ToUtfBytes());
+                        var dbCipherBytes = await _mDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
+                        using (var appContEntryActionsH = await _mDataEntryActions.NewAsync())
                         {
-                            await MDataEntryActions.InsertAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes);
-                            await MData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                            await _mDataEntryActions.InsertAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes);
+                            await _mData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
                         }
                     }
                 }
@@ -147,19 +175,19 @@ namespace SAFE.EventStore.Services
         public async Task<List<DatabaseId>> GetDatabaseIdsAsync()
         {
             var dbIds = new List<DatabaseId>();
-            using (var appContH = await AccessContainer.GetMDataInfoAsync(AppContainerPath))
+            using (var appContH = await _accessContainer.GetMDataInfoAsync(AppContainerPath))
             {
                 List<List<byte>> cipherTxtEntryKeys;
-                using (var appContEntryKeysH = await MData.ListKeysAsync(appContH))
+                using (var appContEntryKeysH = await _mData.ListKeysAsync(appContH))
                 {
-                    cipherTxtEntryKeys = await MDataKeys.ForEachAsync(appContEntryKeysH);
+                    cipherTxtEntryKeys = await _mDataKeys.ForEachAsync(appContEntryKeysH);
                 }
 
                 foreach (var cipherTxtEntryKey in cipherTxtEntryKeys)
                 {
                     try
                     {
-                        var plainTxtEntryKey = await MDataInfo.DecryptAsync(appContH, cipherTxtEntryKey);
+                        var plainTxtEntryKey = await _mDataInfo.DecryptAsync(appContH, cipherTxtEntryKey);
                         var databaseId = plainTxtEntryKey.ToUtfString();
                         
                         if (!databaseId.Contains(_protocolId))
@@ -208,11 +236,11 @@ namespace SAFE.EventStore.Services
 
             // The stream type md, whose entries contains all streamKeys of the type 
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
-            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
+            using (var category_MDataInfoH = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2))
             {
-                using (var categoryEntryKeysH = await MData.ListKeysAsync(category_MDataInfoH))
+                using (var categoryEntryKeysH = await _mData.ListKeysAsync(category_MDataInfoH))
                 {
-                    var streamKeys = await MDataKeys.ForEachAsync(categoryEntryKeysH);
+                    var streamKeys = await _mDataKeys.ForEachAsync(categoryEntryKeysH);
 
                     return streamKeys.Select(key => key.ToUtfString()).ToList();
                 }
@@ -241,11 +269,11 @@ namespace SAFE.EventStore.Services
             // We get the category md, whose entries contains all streamKeys of the category
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
             (List<byte>, List<byte>, ulong) streamEntry;
-            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
+            using (var category_MDataInfoH = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2))
             {
-                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
+                using (var categoryDataEntH = await _mData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
                 {
-                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
+                    var streams = await _mDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
 
                     try
                     {
@@ -258,11 +286,11 @@ namespace SAFE.EventStore.Services
                 }
             }
 
-            using (var stream_MDataInfoH = await MDataInfo.DeserialiseAsync(streamEntry.Item2))
+            using (var stream_MDataInfoH = await _mDataInfo.DeserialiseAsync(streamEntry.Item2))
             {
-                using (var streamDataEntH = await MData.ListEntriesAsync(stream_MDataInfoH)) // get the entries of this specific stream instance
+                using (var streamDataEntH = await _mData.ListEntriesAsync(stream_MDataInfoH)) // get the entries of this specific stream instance
                 {
-                    var eventBatchEntries = await MDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
+                    var eventBatchEntries = await _mDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
                     
                     var entry = eventBatchEntries.First(e => VERSION_KEY == e.Item1.ToUtfString());
                     var versionString = entry.Item2.ToUtfString();
@@ -294,11 +322,11 @@ namespace SAFE.EventStore.Services
             // We get the category md, whose entries contains all streamKeys of the category
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
             (List<byte>, List<byte>, ulong) streamEntry;
-            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
+            using (var category_MDataInfoH = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2))
             {
-                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
+                using (var categoryDataEntH = await _mData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
                 {
-                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
+                    var streams = await _mDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this category (key: streamKey, value: serialized mdata info handle)
 
                     try
                     {
@@ -311,11 +339,11 @@ namespace SAFE.EventStore.Services
                 }
             }
 
-            using (var stream_MDataInfoH = await MDataInfo.DeserialiseAsync(streamEntry.Item2))
+            using (var stream_MDataInfoH = await _mDataInfo.DeserialiseAsync(streamEntry.Item2))
             {
-                using (var streamDataEntH = await MData.ListEntriesAsync(stream_MDataInfoH)) // get the entries of this specific stream instance
+                using (var streamDataEntH = await _mData.ListEntriesAsync(stream_MDataInfoH)) // get the entries of this specific stream instance
                 {
-                    var eventBatchEntries = await MDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
+                    var eventBatchEntries = await _mDataEntries.ForEachAsync(streamDataEntH); // lists all eventbatches stored to this stream instance
 
                     var bag = new ConcurrentBag<EventBatch>();
                     var tasks1 = eventBatchEntries.Select(eventBatchEntry =>
@@ -362,13 +390,13 @@ namespace SAFE.EventStore.Services
             databaseId = DbIdForProtocol(databaseId);
             
             List<byte> content;
-            using (var appContH = await AccessContainer.GetMDataInfoAsync(AppContainerPath))
+            using (var appContH = await _accessContainer.GetMDataInfoAsync(AppContainerPath))
             {
-                var dbIdCipherBytes = await MDataInfo.EncryptEntryKeyAsync(appContH, databaseId.ToUtfBytes());
-                var entryValue = await MData.GetValueAsync(appContH, dbIdCipherBytes);
+                var dbIdCipherBytes = await _mDataInfo.EncryptEntryKeyAsync(appContH, databaseId.ToUtfBytes());
+                var entryValue = await _mData.GetValueAsync(appContH, dbIdCipherBytes);
                 var dbCipherBytes = entryValue.Item1;
 
-                content = await MDataInfo.DecryptAsync(appContH, dbCipherBytes);
+                content = await _mDataInfo.DecryptAsync(appContH, dbCipherBytes);
 
                 var database = JsonConvert.DeserializeObject<Database>(content.ToUtfString());
 
@@ -381,11 +409,11 @@ namespace SAFE.EventStore.Services
         async Task<List<(List<byte>, List<byte>, ulong)>> GetCategoriesEntries(Database database)
         {
             List<(List<byte>, List<byte>, ulong)> dbCategoriesEntries;
-            using (var dbCategoriesDataInfoH = await MDataInfo.DeserialiseAsync(database.Categories.Data))
+            using (var dbCategoriesDataInfoH = await _mDataInfo.DeserialiseAsync(database.Categories.Data))
             {
-                using (var dbCategoriesDataEntH = await MData.ListEntriesAsync(dbCategoriesDataInfoH))
+                using (var dbCategoriesDataEntH = await _mData.ListEntriesAsync(dbCategoriesDataInfoH))
                 {
-                    dbCategoriesEntries = await MDataEntries.ForEachAsync(dbCategoriesDataEntH);
+                    dbCategoriesEntries = await _mDataEntries.ForEachAsync(dbCategoriesDataEntH);
                 }
             }
 
@@ -394,10 +422,10 @@ namespace SAFE.EventStore.Services
 
         async Task<EventData> GetEventDataFromAddress(StoredEvent stored)
         {
-            using (var seReaderHandle = await IData.FetchSelfEncryptorAsync(stored.DataMapAddress))
+            using (var seReaderHandle = await _iData.FetchSelfEncryptorAsync(stored.DataMapAddress))
             {
-                var len = await IData.SizeAsync(seReaderHandle);
-                var readData = await IData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
+                var len = await _iData.SizeAsync(seReaderHandle);
+                var readData = await _iData.ReadFromSelfEncryptorAsync(seReaderHandle, 0, len);
 
                 var eventData = new EventData(readData.ToArray(),
                     stored.MetaData.CorrelationId,
@@ -476,23 +504,23 @@ namespace SAFE.EventStore.Services
             var categories = await GetCategoriesEntries(database);
 
             // Create Self Permissions to the MDs
-            using (var streamSelfPermSetH = await MDataPermissionSet.NewAsync())
+            using (var streamSelfPermSetH = await _mDataPermissionSet.NewAsync())
             {
                 await Task.WhenAll(
-                    MDataPermissionSet.AllowAsync(streamSelfPermSetH, MDataAction.kInsert),
-                    MDataPermissionSet.AllowAsync(streamSelfPermSetH, MDataAction.kUpdate));
+                    _mDataPermissionSet.AllowAsync(streamSelfPermSetH, MDataAction.kInsert),
+                    _mDataPermissionSet.AllowAsync(streamSelfPermSetH, MDataAction.kUpdate));
 
-                using (var streamPermH = await MDataPermissions.NewAsync())
+                using (var streamPermH = await _mDataPermissions.NewAsync())
                 {
-                    using (var appSignPkH = await Crypto.AppPubSignKeyAsync())
+                    using (var appSignPkH = await _crypto.AppPubSignKeyAsync())
                     {
-                        await MDataPermissions.InsertAsync(streamPermH, appSignPkH, streamSelfPermSetH);
+                        await _mDataPermissions.InsertAsync(streamPermH, appSignPkH, streamSelfPermSetH);
                     }
 
                     var (streamName, streamId) = GetKeyParts(initBatch.StreamKey);
 
                     // Create an MD, with one event batch in it, with entry type of "stream"
-                    using (var stream_EntriesH = await MDataEntries.NewAsync())
+                    using (var stream_EntriesH = await _mDataEntries.NewAsync())
                     {
                         var streamMetadataKey = METADATA_KEY.ToUtfBytes();
                         var streamMetadata = new MDMetaData
@@ -501,37 +529,37 @@ namespace SAFE.EventStore.Services
                             { "streamName", streamName },
                             { "streamId", streamId.ToString() },
                         }.Json().ToUtfBytes();
-                        await MDataEntries.InsertAsync(stream_EntriesH, streamMetadataKey, streamMetadata);
+                        await _mDataEntries.InsertAsync(stream_EntriesH, streamMetadataKey, streamMetadata);
                         
                         // First event batch in stream added
                         var batchKey = GetBatchKey(initBatch);
                         var jsonBatch = await GetJsonBatch(initBatch); // NB: stores to Immutable data!
-                        await MDataEntries.InsertAsync(stream_EntriesH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
+                        await _mDataEntries.InsertAsync(stream_EntriesH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
 
                         var versionKey = VERSION_KEY.ToUtfBytes();
-                        await MDataEntries.InsertAsync(stream_EntriesH, versionKey, initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes());
+                        await _mDataEntries.InsertAsync(stream_EntriesH, versionKey, initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes());
 
-                        var stream_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                        await MData.PutAsync(stream_MDataInfoH, streamPermH, stream_EntriesH); // <----------------------------------------------    Commit ------------------------
+                        var stream_MDataInfoH = await _mDataInfo.RandomPrivateAsync(15001);
+                        await _mData.PutAsync(stream_MDataInfoH, streamPermH, stream_EntriesH); // <----------------------------------------------    Commit ------------------------
 
-                        var serializedStream_MdInfo = await MDataInfo.SerialiseAsync(stream_MDataInfoH); // Value
+                        var serializedStream_MdInfo = await _mDataInfo.SerialiseAsync(stream_MDataInfoH); // Value
 
                         var existingCategory = categories.SingleOrDefault(s => s.Item1.ToUtfString() == streamName);
                         if (existingCategory.Item1 != null && existingCategory.Item2 != null)
                         {
-                            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(existingCategory.Item2))
+                            using (var category_MDataInfoH = await _mDataInfo.DeserialiseAsync(existingCategory.Item2))
                             {
-                                using (var category_EntriesH = await MDataEntryActions.NewAsync())
+                                using (var category_EntriesH = await _mDataEntryActions.NewAsync())
                                 {
                                     // create the insert action
-                                    await MDataEntryActions.InsertAsync(category_EntriesH, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
-                                    await MData.MutateEntriesAsync(category_MDataInfoH, category_EntriesH); // <----------------------------------------------    Commit ------------------------
+                                    await _mDataEntryActions.InsertAsync(category_EntriesH, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
+                                    await _mData.MutateEntriesAsync(category_MDataInfoH, category_EntriesH); // <----------------------------------------------    Commit ------------------------
                                     return;
                                 }
                             }
                         }
 
-                        using (var category_EntriesH_1 = await MDataEntries.NewAsync())
+                        using (var category_EntriesH_1 = await _mDataEntries.NewAsync())
                         {
                             #region Create Category MD
                             var catMetadataKey = METADATA_KEY.ToUtfBytes();
@@ -540,46 +568,46 @@ namespace SAFE.EventStore.Services
                                 { "type", "category" },
                                 { "typeName", streamName }
                             }.Json().ToUtfBytes();
-                            await MDataEntries.InsertAsync(category_EntriesH_1, catMetadataKey, catMetadata);
-                            await MDataEntries.InsertAsync(category_EntriesH_1, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
+                            await _mDataEntries.InsertAsync(category_EntriesH_1, catMetadataKey, catMetadata);
+                            await _mDataEntries.InsertAsync(category_EntriesH_1, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
 
-                            var category_MDataInfoH = await MDataInfo.RandomPrivateAsync(15001);
-                            await MData.PutAsync(category_MDataInfoH, streamPermH, category_EntriesH_1); // <----------------------------------------------    Commit ------------------------
+                            var category_MDataInfoH = await _mDataInfo.RandomPrivateAsync(15001);
+                            await _mData.PutAsync(category_MDataInfoH, streamPermH, category_EntriesH_1); // <----------------------------------------------    Commit ------------------------
 
-                            var serializedCategory_MdInfo = await MDataInfo.SerialiseAsync(category_MDataInfoH); // Value
+                            var serializedCategory_MdInfo = await _mDataInfo.SerialiseAsync(category_MDataInfoH); // Value
 
                             #endregion Create Category MD
 
 
                             #region Insert new category to Stream Categories Directory MD
 
-                            using (var categoriesMDataInfoH = await MDataInfo.DeserialiseAsync(database.Categories.Data))
+                            using (var categoriesMDataInfoH = await _mDataInfo.DeserialiseAsync(database.Categories.Data))
                             {
-                                using (var category_EntriesH_2 = await MDataEntryActions.NewAsync())
+                                using (var category_EntriesH_2 = await _mDataEntryActions.NewAsync())
                                 {
                                     // create the insert action
-                                    await MDataEntryActions.InsertAsync(category_EntriesH_2, streamName.ToUtfBytes(), serializedCategory_MdInfo);
-                                    await MData.MutateEntriesAsync(categoriesMDataInfoH, category_EntriesH_2); // <----------------------------------------------    Commit ------------------------
+                                    await _mDataEntryActions.InsertAsync(category_EntriesH_2, streamName.ToUtfBytes(), serializedCategory_MdInfo);
+                                    await _mData.MutateEntriesAsync(categoriesMDataInfoH, category_EntriesH_2); // <----------------------------------------------    Commit ------------------------
                                 }
 
-                                var serializedCategoriesMdInfo = await MDataInfo.SerialiseAsync(categoriesMDataInfoH);
+                                var serializedCategoriesMdInfo = await _mDataInfo.SerialiseAsync(categoriesMDataInfoH);
 
                                 // Replace the database stream type info with the updated version
                                 database.Categories = new DataArray { Type = "Buffer", Data = serializedCategoriesMdInfo }; // Points to Md holding stream types
 
                                 // serialize and encrypt the database
                                 var serializedDb = JsonConvert.SerializeObject(database);
-                                using (var appContH = await AccessContainer.GetMDataInfoAsync(AppContainerPath)) // appContainerHandle
+                                using (var appContH = await _accessContainer.GetMDataInfoAsync(AppContainerPath)) // appContainerHandle
                                 {
-                                    var dbIdCipherBytes = await MDataInfo.EncryptEntryKeyAsync(appContH, database.DbId.ToUtfBytes());
-                                    var dbCipherBytes = await MDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
-                                    using (var appContEntryActionsH = await MDataEntryActions.NewAsync())
+                                    var dbIdCipherBytes = await _mDataInfo.EncryptEntryKeyAsync(appContH, database.DbId.ToUtfBytes());
+                                    var dbCipherBytes = await _mDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
+                                    using (var appContEntryActionsH = await _mDataEntryActions.NewAsync())
                                     {
                                         // create the update action, will fail if the entry was updated from somewhere else since db was fetched. todo: reload the db and apply again
-                                        await MDataEntryActions.UpdateAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes, database.Version + 1);
+                                        await _mDataEntryActions.UpdateAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes, database.Version + 1);
 
                                         // Finally update App Container (store new db info to it)
-                                        await MData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                                        await _mData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
                                     }
                                 }
                             }
@@ -601,11 +629,11 @@ namespace SAFE.EventStore.Services
             // The category md, whose entries contains all streamKeys of the category 
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
             (List<byte>, List<byte>, ulong) streamEntry;
-            using (var category_MDataInfoH = await MDataInfo.DeserialiseAsync(categoryEntry.Item2))
+            using (var category_MDataInfoH = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2))
             {
-                using (var categoryDataEntH = await MData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
+                using (var categoryDataEntH = await _mData.ListEntriesAsync(category_MDataInfoH))  // get the entries of this specific category
                 {
-                    var streams = await MDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this type
+                    var streams = await _mDataEntries.ForEachAsync(categoryDataEntH); // lists all instances of this type
 
                     try
                     {
@@ -621,24 +649,24 @@ namespace SAFE.EventStore.Services
             // With ImD-Protocol, the entries of a stream, are the 
             // serialized batch of addresses to ImmutableData
             // which hold the actual event.
-            using (var stream_MDataInfoH = await MDataInfo.DeserialiseAsync(streamEntry.Item2))
+            using (var stream_MDataInfoH = await _mDataInfo.DeserialiseAsync(streamEntry.Item2))
             {
                 var batchKey = GetBatchKey(batch);
                 var jsonBatch = await GetJsonBatch(batch); // NB: stores to Immutable data!
                 var newStreamVersion = batch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes();
                 var newMdEntryVersion = mdEntryVersion + 1;
-                using (var streamEntryActionsH = await MDataEntryActions.NewAsync())
+                using (var streamEntryActionsH = await _mDataEntryActions.NewAsync())
                 {
                     // create the insert action
-                    await MDataEntryActions.InsertAsync(streamEntryActionsH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
-                    await MDataEntryActions.UpdateAsync(streamEntryActionsH, VERSION_KEY.ToUtfBytes(), newStreamVersion, newMdEntryVersion);
+                    await _mDataEntryActions.InsertAsync(streamEntryActionsH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
+                    await _mDataEntryActions.UpdateAsync(streamEntryActionsH, VERSION_KEY.ToUtfBytes(), newStreamVersion, newMdEntryVersion);
                     // mdEntryVersion gives proper concurrency management of writes to streams.
                     // We can now have multiple concurrent processes writing to the same stream and maintain version sequence intact
 
                     try
                     {
                         // Finally update md (store batch to it)
-                        await MData.MutateEntriesAsync(stream_MDataInfoH, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                        await _mData.MutateEntriesAsync(stream_MDataInfoH, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
                     }
                     catch(Exception ex)
                     {
@@ -692,13 +720,13 @@ namespace SAFE.EventStore.Services
         // returns data map address
         async Task<List<byte>> StoreImmutableData(byte[] payload)
         {
-            using (var cipherOptHandle = await CipherOpt.NewPlaintextAsync())
+            using (var cipherOptHandle = await _cipherOpt.NewPlaintextAsync())
             {
-                using (var seWriterHandle = await IData.NewSelfEncryptorAsync())
+                using (var seWriterHandle = await _iData.NewSelfEncryptorAsync())
                 {
-                    await IData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
-                    var dataMapAddress = await IData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
-                    //await IData.SelfEncryptorWriterFreeAsync(seWriterHandle);
+                    await _iData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
+                    var dataMapAddress = await _iData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
+                    //await _iData.SelfEncryptorWriterFreeAsync(seWriterHandle);
                     return dataMapAddress;
                 }
             }
@@ -737,16 +765,16 @@ namespace SAFE.EventStore.Services
             return (streamName, streamId);
         }
 
-        static async Task<(List<byte>, List<byte>)> GenerateRandomKeyPair()
+        async Task<(List<byte>, List<byte>)> GenerateRandomKeyPair()
         {
-            var randomKeyPairTuple = await Crypto.EncGenerateKeyPairAsync();
+            var randomKeyPairTuple = await _crypto.EncGenerateKeyPairAsync();
             List<byte> inboxEncPk, inboxEncSk;
             using (var inboxEncPkH = randomKeyPairTuple.Item1)
             {
                 using (var inboxEncSkH = randomKeyPairTuple.Item2)
                 {
-                    inboxEncPk = await Crypto.EncPubKeyGetAsync(inboxEncPkH);
-                    inboxEncSk = await Crypto.EncSecretKeyGetAsync(inboxEncSkH);
+                    inboxEncPk = await _crypto.EncPubKeyGetAsync(inboxEncPkH);
+                    inboxEncSk = await _crypto.EncSecretKeyGetAsync(inboxEncSkH);
                 }
             }
             return (inboxEncPk, inboxEncSk);

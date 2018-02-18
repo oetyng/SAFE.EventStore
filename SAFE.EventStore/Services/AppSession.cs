@@ -7,12 +7,25 @@ using Utils;
 
 namespace SAFE.EventStore.Services
 {
-
-    public class State
+    public class AppConstants
     {
-        static string _appId;
+        public const string Name = "SAFE EventStore";
+        public const string Vendor = "oetyng";
+        public const string Id = "oetyng.apps.safe.eventstore";
+    }
+    
+    public class AppSession : IDisposable, IAppSession
+    {
+        const string AuthDeniedMessage = "Failed to receive Authentication.";
+        const string AuthInProgressMessage = "Connecting to SAFE Network...";
+        //const string AuthReconnectPropKey = nameof(AuthReconnect);
+        //CredentialCacheService CredentialCache { get; }
 
-        public static string AppId
+        public bool IsLogInitialised { get; set; }
+        public bool IsAuthenticated { get; private set; }
+
+        string _appId;
+        public string AppId
         {
             get
             {
@@ -22,29 +35,14 @@ namespace SAFE.EventStore.Services
             }
             set => _appId = value;
         }
-    }
 
+        Session _session;
 
-    public class AppSession : IDisposable, IAppSession
-    {
-        const string AuthDeniedMessage = "Failed to receive Authentication.";
-        const string AuthInProgressMessage = "Connecting to SAFE Network...";
-        //private const string AuthReconnectPropKey = nameof(AuthReconnect);
-        
-
-        //private bool _isLogInitialised;
-        //private CredentialCacheService CredentialCache { get; }
-
-        public bool IsLogInitialised { get; set; } //{ get => _isLogInitialised; set => SetProperty(ref _isLogInitialised, value); }
-
-        public bool IsAuthenticated { get; private set; }
-
-        public static string AppId => State.AppId;
-
-        public AppSession()
+        public AppSession(Session session)
         {
-            //_isLogInitialised = false;
             //CredentialCache = new CredentialCacheService();
+
+            _session = session;
             InitLoggingAsync();
         }
 
@@ -61,26 +59,26 @@ namespace SAFE.EventStore.Services
 
         void FreeState()
         {
-            State.AppId = null;
-            Session.FreeApp();
+            AppId = null;
+            _session.FreeApp();
             IsAuthenticated = false;
         }
 
         async Task<bool> InstallUriAsync()
         {
-            State.AppId = "oetyng.apps.safe.eventstore";
+            AppId = "oetyng.apps.safe.eventstore";
 
             var appInfo = new AppInfo
             {
                 Id = AppId,
                 Name = "SAFE EventStore",
-                Vendor = "Oetyng",
+                Vendor = "oetyng",
                 Icon = "some icon",
-                Exec = @"C:\Users\oetyng\SAFEEventStore\SAFE.EventStore.AppAuth.exe", // tested various ways: // @"localhost://p:52794/api/auth?EncodedUrl=test", ,//@"dotnet C:\Users\oetyng\SAFEEventStore\SAFE.EvenStore.AppAuth.dll",
+                Exec = "[authExecPath]", //@"C:\Users\oetyng\SAFEEventStore\SAFE.EventStore.AppAuth.exe"
                 Schemes = "safe-b2v0ew5nlmfwchmuc2fmzs5ldmvudhn0b3jl"
             };
 
-            var installed = await Session.InstallUriAsync(appInfo);
+            var installed = await _session.InstallUriAsync(appInfo);
             
             Debug.WriteLine($"Installed: {installed}");
             return installed;
@@ -94,11 +92,11 @@ namespace SAFE.EventStore.Services
             var authReq = new AuthReq
             {
                 AppContainer = true,
-                AppExchangeInfo = new AppExchangeInfo { Id = AppId, Scope = "", Name = "SAFE EventStore", Vendor = "Oetyng" },
+                AppExchangeInfo = new AppExchangeInfo { Id = AppId, Scope = "", Name = "SAFE EventStore", Vendor = "oetyng" },
                 Containers = new List<ContainerPermissions> { new ContainerPermissions { ContainerName = "_publicNames", Access = { Insert = true } } }
             };
 
-            var encodedReq = await Session.EncodeAuthReqAsync(authReq);
+            var encodedReq = await _session.EncodeAuthReqAsync(authReq);
             var formattedReq = UrlFormat.Convert(encodedReq, false);
             Debug.WriteLine($"Encoded Req: {formattedReq}");
             return formattedReq;
@@ -109,13 +107,13 @@ namespace SAFE.EventStore.Services
             try
             {
                 var formattedUrl = UrlFormat.Convert(encodedUrl, true);
-                var decodeResult = await Session.DecodeIpcMessageAsync(formattedUrl);
+                var decodeResult = await _session.DecodeIpcMessageAsync(formattedUrl);
                 if (decodeResult.AuthGranted.HasValue)
                 {
                     var authGranted = decodeResult.AuthGranted.Value;
                     Debug.WriteLine("Received Auth Granted from Authenticator");
                     // update auth progress message
-                    await Session.AppRegisteredAsync(AppId, authGranted);
+                    await _session.AppRegisteredAsync(AppId, authGranted);
                     //if (AuthReconnect)
                     //{
                     //    var encodedAuthRsp = JsonConvert.SerializeObject(authGranted);
@@ -134,7 +132,7 @@ namespace SAFE.EventStore.Services
 
         async void InitLoggingAsync()
         {
-            var started = await Session.InitLoggingAsync();
+            var started = await _session.InitLoggingAsync();
             if (!started)
             {
                 Debug.WriteLine("Unable to Initialise Logging.");
@@ -149,7 +147,7 @@ namespace SAFE.EventStore.Services
         {
             try
             {
-                if (Session.IsDisconnected)
+                if (_session.IsDisconnected)
                 {
                     //if (!AuthReconnect)
                     //{
@@ -159,7 +157,7 @@ namespace SAFE.EventStore.Services
                     //{
                     //var encodedAuthRsp = CredentialCache.Retrieve();
                     //var authGranted = JsonConvert.DeserializeObject<AuthGranted>(encodedAuthRsp);
-                    //await Session.AppRegisteredAsync(AppId, authGranted);
+                    //await _session.AppRegisteredAsync(AppId, authGranted);
                     //}
                     try
                     {
