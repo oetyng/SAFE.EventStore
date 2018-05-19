@@ -1,4 +1,6 @@
-﻿using System.Threading.Tasks;
+﻿using SAFE.EventSourcing;
+using SafeApp;
+using System.Threading.Tasks;
 
 namespace SAFE.EventStore.Services
 {
@@ -8,6 +10,6 @@ namespace SAFE.EventStore.Services
         void Dispose();
         bool IsAuthenticated { get; }
         Task<string> GenerateAppRequestAsync();
-        Task HandleUrlActivationAsync(string encodedUrl);
+        Task<IEventStore> HandleUrlActivationAsync(string encodedUrl);
     }
 }

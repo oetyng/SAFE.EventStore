@@ -1,5 +1,4 @@
 ﻿using System;
-using Utils;
 
 namespace SAFE.DotNET.Models
 {

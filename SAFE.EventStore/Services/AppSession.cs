@@ -1,9 +1,10 @@
-﻿using SAFE.DotNET.Native;
+﻿using SAFE.EventSourcing;
+using SafeApp;
+using SafeApp.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading.Tasks;
-using Utils;
 
 namespace SAFE.EventStore.Services
 {
@@ -38,11 +39,10 @@ namespace SAFE.EventStore.Services
 
         Session _session;
 
-        public AppSession(Session session)
+        public AppSession()
         {
             //CredentialCache = new CredentialCacheService();
 
-            _session = session;
             InitLoggingAsync();
         }
 
@@ -60,7 +60,7 @@ namespace SAFE.EventStore.Services
         void FreeState()
         {
             AppId = null;
-            _session.FreeApp();
+            _session.Dispose();
             IsAuthenticated = false;
         }
 
@@ -78,7 +78,7 @@ namespace SAFE.EventStore.Services
                 Schemes = "safe-b2v0ew5nlmfwchmuc2fmzs5ldmvudhn0b3jl"
             };
 
-            var installed = await _session.InstallUriAsync(appInfo);
+            var installed = await Session.InstallUriAsync(appInfo);
             
             Debug.WriteLine($"Installed: {installed}");
             return installed;
@@ -92,55 +92,57 @@ namespace SAFE.EventStore.Services
             var authReq = new AuthReq
             {
                 AppContainer = true,
-                AppExchangeInfo = new AppExchangeInfo { Id = AppId, Scope = "", Name = "SAFE EventStore", Vendor = "oetyng" },
-                Containers = new List<ContainerPermissions> { new ContainerPermissions { ContainerName = "_publicNames", Access = { Insert = true } } }
+                App = new AppExchangeInfo { Id = AppId, Scope = "", Name = "SAFE EventStore", Vendor = "oetyng" },
+                Containers = new List<ContainerPermissions> { new ContainerPermissions { ContName = "_publicNames", Access = { Insert = true } } }
             };
 
-            var encodedReq = await _session.EncodeAuthReqAsync(authReq);
-            var formattedReq = UrlFormat.Convert(encodedReq, false);
+            var encodedReq = await Session.EncodeAuthReqAsync(authReq);
+            var formattedReq = UrlFormat.Format(AppId, encodedReq.Item2, false);
             Debug.WriteLine($"Encoded Req: {formattedReq}");
             return formattedReq;
         }
 
-        public async Task HandleUrlActivationAsync(string encodedUrl)
+        public async Task<IEventStore> HandleUrlActivationAsync(string encodedUrl)
         {
             try
             {
-                var formattedUrl = UrlFormat.Convert(encodedUrl, true);
-                var decodeResult = await _session.DecodeIpcMessageAsync(formattedUrl);
-                if (decodeResult.AuthGranted.HasValue)
+                var encodedRequest = UrlFormat.GetRequestData(encodedUrl);
+                var decodeResult = await Session.DecodeIpcMessageAsync(encodedRequest);
+                if (decodeResult is AuthIpcMsg ipcMsg)
                 {
-                    var authGranted = decodeResult.AuthGranted.Value;
-                    Debug.WriteLine("Received Auth Granted from Authenticator");
                     // update auth progress message
-                    await _session.AppRegisteredAsync(AppId, authGranted);
+                    Debug.WriteLine("Received Auth Granted from Authenticator");
+                    IsAuthenticated = true;
+                    _session = await Session.AppRegisteredAsync(AppId, ipcMsg.AuthGranted);
                     //if (AuthReconnect)
                     //{
-                    //    var encodedAuthRsp = JsonConvert.SerializeObject(authGranted);
+                    //    var encodedAuthRsp = JsonConvert.SerializeObject(ipcMsg.AuthGranted);
                     //    CredentialCache.Store(encodedAuthRsp);
                     //}
-                    IsAuthenticated = true;
+                    return new EventStoreImDProtocol(AppId, _session);
                 }
                 else
                     Debug.WriteLine("Decoded Req is not Auth Granted");
+
+                throw new Exception("Decoded Req is not Auth Granted");
             }
             catch (Exception ex)
             {
-                //await Application.Current.MainPage.DisplayAlert("Error", $"Description: {ex.Message}", "OK");
+                throw;
             }
         }
 
         async void InitLoggingAsync()
         {
-            var started = await _session.InitLoggingAsync();
-            if (!started)
-            {
-                Debug.WriteLine("Unable to Initialise Logging.");
-                return;
-            }
+            //var started = await _session.InitLoggingAsync();
+            //if (!started)
+            //{
+            //    Debug.WriteLine("Unable to Initialise Logging.");
+            //    return;
+            //}
 
-            Debug.WriteLine("Rust Logging Initialised.");
-            IsLogInitialised = true;
+            //Debug.WriteLine("Rust Logging Initialised.");
+            //IsLogInitialised = true;
         }
 
         public async Task CheckAndReconnect()

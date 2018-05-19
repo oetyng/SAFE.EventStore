@@ -10,13 +10,19 @@
 
   <ItemGroup>
     <Reference Include="SAFE.DEC">
-      <HintPath>..\..\SAFE.DEC\SAFE.DEC\bin\Debug\netstandard2.0\SAFE.DEC.dll</HintPath>
+      <HintPath>lib\SAFE.DEC.dll</HintPath>
     </Reference>
-    <Reference Include="SAFE.DotNET">
-      <HintPath>..\..\..\SAFE.DotNET\SAFE.DotNET\bin\Debug\netstandard2.0\SAFE.DotNET.dll</HintPath>
+    <Reference Include="SafeApp">
+      <HintPath>lib\SafeApp.dll</HintPath>
     </Reference>
-    <Reference Include="SAFE.DotNet.Utils">
-      <HintPath>..\..\..\SAFE.DotNET\SAFE.DotNET.Auth\bin\Debug\netstandard2.0\SAFE.DotNet.Utils.dll</HintPath>
+    <Reference Include="SafeApp.AppBindings">
+      <HintPath>lib\SafeApp.AppBindings.dll</HintPath>
+    </Reference>
+    <Reference Include="SafeApp.MockAuthBindings">
+      <HintPath>lib\SafeApp.MockAuthBindings.dll</HintPath>
+    </Reference>
+    <Reference Include="SafeApp.Utilities">
+      <HintPath>lib\SafeApp.Utilities.dll</HintPath>
     </Reference>
   </ItemGroup>
 
