@@ -516,11 +516,12 @@ namespace SAFE.EventStore.Services
                         var versionKey = VERSION_KEY.ToUtfBytes();
                         await _mDataEntries.InsertAsync(stream_EntriesH, versionKey, initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes());
 
-                        var stream_MDataInfoH = await _mDataInfo.RandomPrivateAsync(15001);
-                        await _mData.PutAsync(stream_MDataInfoH, streamPermH, stream_EntriesH); // <----------------------------------------------    Commit ------------------------
+                        var stream_MDataInfo = await _mDataInfo.RandomPrivateAsync(15001);
+                        await _mData.PutAsync(stream_MDataInfo, streamPermH, stream_EntriesH); // <----------------------------------------------    Commit ------------------------
 
-                        var serializedStream_MdInfo = await _mDataInfo.SerialiseAsync(stream_MDataInfoH); // Value
+                        var serializedStream_MdInfo = await _mDataInfo.SerialiseAsync(stream_MDataInfo); // Value
 
+                        // if the category MD exists, then we store the reference to the stream MD to it, and return.
                         var existingCategory = categories.SingleOrDefault(s => s.Item1.ToUtfString() == streamName);
                         if (existingCategory.Item1 != null && existingCategory.Item2 != null)
                         {
@@ -532,6 +533,7 @@ namespace SAFE.EventStore.Services
                             return;
                         }
 
+                        // if category did not exist, we create it first
                         using (var category_EntriesH_1 = await _mDataEntries.NewAsync())
                         {
                             #region Create Category MD
@@ -544,42 +546,24 @@ namespace SAFE.EventStore.Services
                             await _mDataEntries.InsertAsync(category_EntriesH_1, catMetadataKey, catMetadata);
                             await _mDataEntries.InsertAsync(category_EntriesH_1, initBatch.StreamKey.ToUtfBytes(), serializedStream_MdInfo);
 
-                            var category_MDataInfoH = await _mDataInfo.RandomPrivateAsync(15001);
-                            await _mData.PutAsync(category_MDataInfoH, streamPermH, category_EntriesH_1); // <----------------------------------------------    Commit ------------------------
+                            var category_MDataInfo = await _mDataInfo.RandomPrivateAsync(15001);
+                            await _mData.PutAsync(category_MDataInfo, streamPermH, category_EntriesH_1); // <----------------------------------------------    Commit ------------------------
 
-                            var serializedCategory_MdInfo = await _mDataInfo.SerialiseAsync(category_MDataInfoH); // Value
+                            var serializedCategory_MdInfo = await _mDataInfo.SerialiseAsync(category_MDataInfo); // Value
 
                             #endregion Create Category MD
 
 
                             #region Insert new category to Stream Categories Directory MD
 
-                            var categoriesMDataInfoH = await _mDataInfo.DeserialiseAsync(database.Categories.Data);
+                            var categoriesMDataInfo = await _mDataInfo.DeserialiseAsync(database.Categories.Data);
                             using (var category_EntriesH_2 = await _mDataEntryActions.NewAsync())
                             {
                                 // create the insert action
                                 await _mDataEntryActions.InsertAsync(category_EntriesH_2, streamName.ToUtfBytes(), serializedCategory_MdInfo);
-                                await _mData.MutateEntriesAsync(categoriesMDataInfoH, category_EntriesH_2); // <----------------------------------------------    Commit ------------------------
+                                await _mData.MutateEntriesAsync(categoriesMDataInfo, category_EntriesH_2); // <----------------------------------------------    Commit ------------------------
                             }
-
-                            var serializedCategoriesMdInfo = await _mDataInfo.SerialiseAsync(categoriesMDataInfoH);
-
-                            // Replace the database stream type info with the updated version
-                            database.Categories = new DataArray { Type = "Buffer", Data = serializedCategoriesMdInfo }; // Points to Md holding stream types
-
-                            // serialize and encrypt the database
-                            var serializedDb = JsonConvert.SerializeObject(database);
-                            var appContH = await _accessContainer.GetMDataInfoAsync(AppContainerPath); // appContainerHandle
-                            var dbIdCipherBytes = await _mDataInfo.EncryptEntryKeyAsync(appContH, database.DbId.ToUtfBytes());
-                            var dbCipherBytes = await _mDataInfo.EncryptEntryValueAsync(appContH, serializedDb.ToUtfBytes());
-                            using (var appContEntryActionsH = await _mDataEntryActions.NewAsync())
-                            {
-                                // create the update action, will fail if the entry was updated from somewhere else since db was fetched. todo: reload the db and apply again
-                                await _mDataEntryActions.UpdateAsync(appContEntryActionsH, dbIdCipherBytes, dbCipherBytes, database.Version + 1);
-
-                                // Finally update App Container (store new db info to it)
-                                await _mData.MutateEntriesAsync(appContH, appContEntryActionsH); // <----------------------------------------------    Commit ------------------------
-                            }
+                            
                             #endregion Insert new category to Stream Categories Directory MD
                         }
                     }
@@ -597,12 +581,10 @@ namespace SAFE.EventStore.Services
             // Get all streams of the category
             // The category md, whose entries contains all streamKeys of the category 
             // (up to 998 though, and then the next 998 can be found when following link in key "next")
-            //(List<byte>, List<byte>, ulong) streamEntry;
-            //var category_MDataInfo = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2);
-            //var categoryDataKeys = await _mData.ListKeysAsync(category_MDataInfo);  // get the entries of this specific category
 
             var category_MDataInfo = await _mDataInfo.DeserialiseAsync(categoryEntry.Item2);
             var categoryDataKeys = await _mData.ListKeysAsync(category_MDataInfo);  // get the keys of this specific category
+
             (List<byte>, ulong) streamEntry;
 
             try
@@ -693,7 +675,6 @@ namespace SAFE.EventStore.Services
                 {
                     await _iData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
                     var dataMapAddress = await _iData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
-                    //await _iData.SelfEncryptorWriterFreeAsync(seWriterHandle);
                     return dataMapAddress;
                 }
             }
@@ -735,16 +716,16 @@ namespace SAFE.EventStore.Services
         async Task<(byte[], byte[])> GenerateRandomKeyPair()
         {
             var randomKeyPairTuple = await _crypto.EncGenerateKeyPairAsync();
-            byte[] inboxEncPk, inboxEncSk;
+            byte[] encPublicKey, encSecretKey;
             using (var inboxEncPkH = randomKeyPairTuple.Item1)
             {
                 using (var inboxEncSkH = randomKeyPairTuple.Item2)
                 {
-                    inboxEncPk = await _crypto.EncPubKeyGetAsync(inboxEncPkH);
-                    inboxEncSk = await _crypto.EncSecretKeyGetAsync(inboxEncSkH);
+                    encPublicKey = await _crypto.EncPubKeyGetAsync(inboxEncPkH);
+                    encSecretKey = await _crypto.EncSecretKeyGetAsync(inboxEncSkH);
                 }
             }
-            return (inboxEncPk, inboxEncSk);
+            return (encPublicKey, encSecretKey);
         }
 
         #endregion Helpers
