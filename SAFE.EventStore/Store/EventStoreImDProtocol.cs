@@ -105,9 +105,8 @@ namespace SAFE.EventStore.Services
                     await _mDataPermissions.InsertAsync(permissionsHandle, appSignPkH, GetFullPermissions());
                 }
 
-                // Create one Md for holding category partition info, and one for index info
+                // Create one Md for holding category partition info
                 var categoriesInfoBytes = await GetSerialisedMdInfo(permissionsHandle);
-                //var partitionIndexInfoBytes = await GetSerialisedMdInfo(permissionsHandle);
 
                 // Finally update App Container (store db info to it)
                 var database = new Database
@@ -250,12 +249,11 @@ namespace SAFE.EventStore.Services
         //}
 
         /// <summary>
-        /// Retrieves the stream,
-        /// including all events in it.
+        /// Retrieves the stream version and the md entry version.
         /// </summary>
         /// <param name="databaseId">The databae to search in.</param>
         /// <param name="streamKey">The key to the specific stream instance, (in format [category]@[guid])</param>
-        /// <returns>The entire stream with all events.</returns>
+        /// <returns>Stream version and md entry version.</returns>
         public async Task<(int, ulong)> GetStreamVersionAsync(string databaseId, string streamKey)
         {
             try
@@ -766,17 +764,16 @@ namespace SAFE.EventStore.Services
         // state is written to the network with this action (ImD created).
         async Task<string> GetJsonBatch(EventBatch batch)
         {
-            ConcurrentBag<object> imd = new ConcurrentBag<object>();
+            var imd = new ConcurrentBag<object>();
 
-            var tasks = batch.Body.Select(x =>
-                Task.Run(async () =>
+            var tasks = batch.Body.Select(async x =>
+            {
+                imd.Add(new StoredEvent
                 {
-                    imd.Add(new StoredEvent
-                    {
-                        MetaData = x.MetaData,
-                        DataMapAddress = await StoreImmutableData(x.Payload)
-                    });
-                }));
+                    MetaData = x.MetaData,
+                    DataMapAddress = await StoreImmutableData(x.Payload)
+                });
+            });
 
             await Task.WhenAll(tasks);
 
