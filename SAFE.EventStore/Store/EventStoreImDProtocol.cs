@@ -28,21 +28,13 @@ namespace SAFE.EventStore.Services
     /// </summary>
     public class EventStoreImDProtocol : IDisposable, IEventStore
     {
+        #region private fields
         const int MD_ENTRIES_COUNT = 995;
-
         const string VERSION_KEY = "version";
         const string METADATA_KEY = "metadata";
         const string PROTOCOL = "IData";
-
         readonly string _protocolId = $"{PROTOCOL}/";
         readonly string AppContainerPath;
-
-        string DbIdForProtocol(string databaseId)
-        {
-            return $"{_protocolId}{databaseId}";
-        }
-
-        #region Init
 
         Session _session;
         MDataInfoActions _mDataInfo;
@@ -54,6 +46,13 @@ namespace SAFE.EventStore.Services
         MDataEntries _mDataEntries;
         IData _iData;
         CipherOpt _cipherOpt;
+        #endregion private fields
+
+        #region Init
+        string DbIdForProtocol(string databaseId)
+        {
+            return $"{_protocolId}{databaseId}";
+        }
 
         public EventStoreImDProtocol(string appId, Session session)
         {
@@ -87,8 +86,9 @@ namespace SAFE.EventStore.Services
             _session?.Dispose();
             _session = null;
         }
-
         #endregion Init
+
+        #region Write
 
         public async Task CreateDbAsync(string databaseId)
         {
@@ -106,7 +106,7 @@ namespace SAFE.EventStore.Services
                 }
 
                 // Create one Md for holding category partition info
-                var categoriesInfoBytes = await GetSerialisedMdInfo(permissionsHandle);
+                var categoriesInfoBytes = await CreateEmptySerialisedMdInfo(permissionsHandle);
 
                 // Finally update App Container (store db info to it)
                 var database = new Database
@@ -127,12 +127,304 @@ namespace SAFE.EventStore.Services
             }
         }
 
-        async Task<List<byte>> GetSerialisedMdInfo(NativeHandle permissionsHandle)
+        /// <summary>
+        /// Stores a batch to the stream.
+        /// Will protect stream integrity
+        /// with regards to version.
+        /// 
+        /// TODO: We need to return some richer model
+        /// so that the outer scope can distinguish between version exception
+        /// and other exceptions. This is needed so that ouoter scope can 
+        /// load the new events, apply to state and retry the cmd.
+        /// </summary>
+        /// <param name="databaseId"></param>
+        /// <param name="streamKey"></param>
+        /// <param name="batch"></param>
+        /// <returns></returns>
+        public async Task<Result<bool>> StoreBatchAsync(string databaseId, EventBatch batch)
+        {
+            // Since the streams only have insert permissions,
+            // the version of it will increase in a deterministic manner,
+            // and we can use the sequenceNr of last event in batch, to derive
+            // a version number to supply to the network when mutating the MD.
+            try
+            {
+                var (streamVersion, mdEntryVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
+                if (streamVersion == -1)
+                    await CreateNewStreamAsync(databaseId, batch);
+                else
+                {
+                    var expectedVersion = batch.Body.First().MetaData.SequenceNumber - 1;
+                    if (streamVersion != expectedVersion)
+                        throw new InvalidOperationException($"Concurrency exception! Expected stream version {expectedVersion}, but found {streamVersion}.");
+
+                    return await StoreToExistingStream(databaseId, batch, mdEntryVersion); // todo: distinguish MD version exception result from other errors
+                }
+
+                return Result.OK(true);
+            }
+            catch (Exception ex)
+            {
+                return Result.Fail<bool>(ex.Message);
+            }
+        }
+
+        async Task<Result<bool>> StoreToExistingStream(string databaseId, EventBatch batch, ulong mdEntryVersion)
+        {
+            // With ImD-Protocol, the entries of a stream, are the 
+            // serialized batch of addresses to ImmutableData
+            // which hold the actual event.
+            var stream_MDataInfo = await GetStreamMdInfo(databaseId, new StreamKey(batch.StreamKey));
+            var batchKey = GetBatchKey(batch);
+            var jsonBatch = await CreateJsonBatch(batch); // NB: stores to Immutable data!
+            var newStreamVersion = batch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes();
+            var newMdEntryVersion = mdEntryVersion + 1;
+            using (var streamEntryActionsH = await _mDataEntryActions.NewAsync())
+            {
+                // create the insert action
+                await _mDataEntryActions.InsertAsync(streamEntryActionsH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
+                await _mDataEntryActions.UpdateAsync(streamEntryActionsH, VERSION_KEY.ToUtfBytes(), newStreamVersion, newMdEntryVersion);
+                // mdEntryVersion gives proper concurrency management of writes to streams.
+                // We can now have multiple concurrent processes writing to the same stream and maintain version sequence intact
+
+                try
+                {
+                    // Finally update md (store batch to it)
+                    await _mData.MutateEntriesAsync(stream_MDataInfo, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
+                }
+                catch (Exception ex)
+                {
+                    if (ex.Message.Contains("InvalidSuccessor"))
+                    {
+                        var (_, mdVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
+                        return Result.Fail<bool>($"Concurrency exception! Expected MD entry version {mdEntryVersion} is not valid. Current version is {mdVersion}.");
+                    }
+                    return Result.Fail<bool>(ex.Message);
+                }
+                // the exception thrown from MutateEntriesAsync when wrong mdEntryVersion entered (i.e. stream modified since last read)
+                // will have to be handled by the outer scope. Preferred way is to load latest version of stream (i.e. load new events)
+                // and then apply the cmd to the aggregate again. This becomes a bit of a problem in case of doing outgoing requests from within the aggregate
+                // as we might not want to do those requests again (depending on their idempotency at the remote recipient).
+                // implementing logic where an outbound non-idempotent request has to be done, will be risky unless managed.
+                // currently not aware of a well established pattern for this
+                // one way could be to run it over multiple cmds, so that we first set the AR to be in a receiving state, 
+                // => (SetReceiving), from here it should reject additional SetReceiving cmds, and only accept 
+                // the cmd which performs the outbound request, if it is issued by the same causer (i.e. making it single threaded).
+            }
+
+            return Result.OK(true);
+        }
+
+        async Task CreateNewStreamAsync(string databaseId, EventBatch initBatch)
+        {
+            if (initBatch.Body.First().MetaData.SequenceNumber != 0)
+                throw new InvalidOperationException("First event in a new stream must start with sequence Nr 0!");
+
+            var key = new StreamKey(initBatch.StreamKey);
+
+            var categoryExists = true;
+            var streamPartitionExists = true;
+            try
+            {
+                var existing = await GetStreamMdInfo(databaseId, key);
+                throw new InvalidOperationException("Stream already exists!"); // the unexpected case
+            }
+            catch (CategoryNotFoundException)
+            {
+                categoryExists = false;
+                streamPartitionExists = false;
+            }
+            catch (StreamKeyPartitionNotFoundException)
+            {
+                streamPartitionExists = false;
+            }
+            catch (StreamKeyNotFoundException)
+            { }
+
+            var jsonBatch = await CreateJsonBatch(initBatch);
+
+            var streamData = new Dictionary<string, List<byte>>
+            {
+                {
+                    METADATA_KEY, new MDMetaData
+                    {
+                        { "type", "stream" },
+                        { "streamName", key.StreamName },
+                        { "streamId", key.StreamId.ToString() },
+                    }.Json().ToUtfBytes()
+                },
+                {
+                    GetBatchKey(initBatch),
+                    jsonBatch.ToUtfBytes()
+                },
+                {
+                    VERSION_KEY,
+                    initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes()
+                }
+            };
+
+            var streamInfoBytes = await CreateMd(streamData);
+
+            if (categoryExists)
+            {
+                var categoryInfo = await GetCategoryMdInfo(databaseId, key.StreamName); // if exists, we mutate it
+
+                if (streamPartitionExists)
+                {
+                    var partitionInfo = await GetMdPartitionInfo(categoryInfo, key.Key.ToUtfBytes());
+                    using (var actionHandle = await _mDataEntryActions.NewAsync()) // create the insert action
+                    {
+                        await _mDataEntryActions.InsertAsync(actionHandle, initBatch.StreamKey.ToUtfBytes(), streamInfoBytes);
+                        await _mData.MutateEntriesAsync(partitionInfo, actionHandle); // <----------------------------------------------    Commit ------------------------
+                    } // end of method
+                }
+                else
+                {
+                    var (partitionKey, partitionInfoBytes) = await CreatePartition(key, streamInfoBytes);
+
+                    using (var actionHandle = await _mDataEntryActions.NewAsync()) // create the insert action
+                    {
+                        await _mDataEntryActions.InsertAsync(actionHandle, partitionKey.ToUtfBytes(), partitionInfoBytes);
+                        await _mData.MutateEntriesAsync(categoryInfo, actionHandle); // <----------------------------------------------    Commit ------------------------
+                    } // end of method
+                }
+            }
+            else
+                await CreateCategory(databaseId, key, streamInfoBytes); // partition is created in this call too
+        }
+
+        // State is written to the network with this action (ImD created).
+        async Task<string> CreateJsonBatch(EventBatch batch)
+        {
+            var imd = new ConcurrentBag<object>();
+
+            var tasks = batch.Body.Select(async x =>
+            {
+                imd.Add(new StoredEvent
+                {
+                    MetaData = x.MetaData,
+                    DataMapAddress = await StoreImmutableData(x.Payload)
+                });
+            });
+
+            await Task.WhenAll(tasks);
+
+            var jsonBatch = imd.ToList().Json(); // to list might not be necessary here
+
+            return jsonBatch;
+        }
+
+        // Returns data map address.
+        async Task<byte[]> StoreImmutableData(byte[] payload)
+        {
+            using (var cipherOptHandle = await _cipherOpt.NewPlaintextAsync())
+            {
+                using (var seWriterHandle = await _iData.NewSelfEncryptorAsync())
+                {
+                    await _iData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
+                    var dataMapAddress = await _iData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
+                    return dataMapAddress;
+                }
+            }
+        }
+
+        // Creates a category, with data (a stream partition) for its first entry.
+        // Updates the db category index with the new category.
+        async Task CreateCategory(string databaseId, StreamKey key, List<byte> serializedStream_MdInfo)
+        {
+            var (partitionKey, partitionInfoBytes) = await CreatePartition(key, serializedStream_MdInfo); // if category does not exist, then the partition does not exist either - since it is a partition within the category.
+            var categoryData = new Dictionary<string, List<byte>>
+            {
+                {
+                    METADATA_KEY, new MDMetaData
+                    {
+                        { "type", "category" },
+                        { "typeName", key.StreamName }
+                    }.Json().ToUtfBytes()
+                },
+                {
+                    partitionKey,
+                    partitionInfoBytes
+                }
+            };
+
+            var categoryInfoBytes = await CreateMd(categoryData);
+
+            var db = await GetDataBase(databaseId);
+            var categoryIndexInfo = await _mDataInfo.DeserialiseAsync(db.Categories.Data);
+            using (var indexEntryActionsH = await _mDataEntryActions.NewAsync())
+            {
+                // create the insert action
+                await _mDataEntryActions.InsertAsync(indexEntryActionsH, key.StreamName.ToUtfBytes(), categoryInfoBytes);
+                await _mData.MutateEntriesAsync(categoryIndexInfo, indexEntryActionsH); // <----------------------------------------------    Commit ------------------------
+            }
+        }
+
+        // Creates a stream partition, with data for its first entry.
+        async Task<(string, List<byte>)> CreatePartition(StreamKey key, List<byte> serializedStream_MdInfo)
+        {
+            var partitionKey = Partitioner.GetPartition(key.Key, MD_ENTRIES_COUNT).ToString();
+
+            var partitionData = new Dictionary<string, List<byte>>
+            {
+                {
+                    METADATA_KEY, new MDMetaData
+                    {
+                        { "type", "partition" },
+                        { "partitionKey", partitionKey }
+                    }.Json().ToUtfBytes()
+                },
+                {
+                    key.Key,
+                    serializedStream_MdInfo
+                }
+            };
+
+            var partitionInfoBytes = await CreateMd(partitionData);
+
+            return (partitionKey, partitionInfoBytes);
+        }
+
+        // Creates an md.
+        async Task<List<byte>> CreateMd(Dictionary<string, List<byte>> data)
+        {
+            using (var permissionH = await _mDataPermissions.NewAsync())
+            {
+                using (var appSignPkH = await _crypto.AppPubSignKeyAsync())
+                    await _mDataPermissions.InsertAsync(permissionH, appSignPkH, GetFullPermissions());
+
+                using (var dataEntries = await _mDataEntries.NewAsync())
+                {
+                    await SetDataEntries(dataEntries, data);
+                    return await CreateSerialisedMdInfo(permissionH, dataEntries);
+                }
+            }
+        }
+
+        // Populates the entries.
+        async Task SetDataEntries(NativeHandle stream_EntriesH, Dictionary<string, List<byte>> data)
+        {
+            foreach (var pair in data)
+                await _mDataEntries.InsertAsync(stream_EntriesH, pair.Key.ToUtfBytes(), pair.Value);
+        }
+
+        // Creates with data.
+        async Task<List<byte>> CreateSerialisedMdInfo(NativeHandle permissionsHandle, NativeHandle dataEntries)
         {
             var info = await _mDataInfo.RandomPrivateAsync(15001);
-            await _mData.PutAsync(info, permissionsHandle, NativeHandle.Zero); // <----------------------------------------------    Commit ------------------------
+            await _mData.PutAsync(info, permissionsHandle, dataEntries); // <----------------------------------------------    Commit ------------------------
             return await _mDataInfo.SerialiseAsync(info);
         }
+
+        // Empty, without data.
+        async Task<List<byte>> CreateEmptySerialisedMdInfo(NativeHandle permissionsHandle)
+        {
+            return await CreateSerialisedMdInfo(permissionsHandle, NativeHandle.Zero);
+        }
+
+        #endregion Write
+
+        #region Read
 
         /// <summary>
         /// Retrieves all database ids of the user.
@@ -150,7 +442,7 @@ namespace SAFE.EventStore.Services
                 {
                     var plainTxtEntryKey = await _mDataInfo.DecryptAsync(appContainerInfo, cipherTxtEntryKey.Val);
                     var databaseId = plainTxtEntryKey.ToUtfString();
-                        
+
                     if (!databaseId.Contains(_protocolId))
                         continue;
                     dbIds.Add(new DatabaseId(databaseId.Replace(_protocolId, string.Empty)));
@@ -177,11 +469,9 @@ namespace SAFE.EventStore.Services
             var categoryIndexInfo = await _mDataInfo.DeserialiseAsync(database.Categories.Data);
             var categoryIndexInfoKeys = await _mData.ListKeysAsync(categoryIndexInfo);
 
-            Parallel.ForEach(categoryIndexInfoKeys, key =>
-            {
+            foreach (var key in categoryIndexInfoKeys)
                 categories.Add(key.Val.ToUtfString());
-            });
-            
+
             return categories.ToList();
         }
 
@@ -260,17 +550,14 @@ namespace SAFE.EventStore.Services
             {
                 var key = new StreamKey(streamKey);
                 var stream_MDataInfo = await GetStreamMdInfo(databaseId, key);
-                var streamDataKeys = await _mData.ListKeysAsync(stream_MDataInfo);  // lists all eventbatches stored to this stream instance
-
-                var versionKey = streamDataKeys.First(c => VERSION_KEY == c.Val.ToUtfString());
-                var entryVal = await _mData.GetValueAsync(stream_MDataInfo, versionKey.Val);
+                var entryVal = await _mData.GetValueAsync(stream_MDataInfo, VERSION_KEY.ToUtfBytes());
                 var versionString = entryVal.Item1.ToUtfString();
                 var version = int.Parse(versionString);
                 return (version, entryVal.Item2);
             }
-            catch (CategoryNotFoundException ex)
+            catch (CategoryNotFoundException)
             { return (-1, 0); } // i.e. does not exist
-            catch (StreamKeyNotFoundException ex)
+            catch (StreamKeyNotFoundException)
             { return (-1, 0); } // i.e. does not exist
         }
 
@@ -314,7 +601,7 @@ namespace SAFE.EventStore.Services
 
                 bag.Add(new EventBatch(streamKey, eventDataBag.First().MetaData.CausationId, eventDataBag.OrderBy(c => c.MetaData.SequenceNumber).ToList()));
             });
-            
+
             await Task.WhenAll(tasks);
 
             var batches = bag
@@ -330,7 +617,7 @@ namespace SAFE.EventStore.Services
         async Task<Database> GetDataBase(string databaseId)
         {
             databaseId = DbIdForProtocol(databaseId);
-            
+
             List<byte> content;
             var appCont = await _accessContainer.GetMDataInfoAsync(AppContainerPath);
             var dbIdCipherBytes = await _mDataInfo.EncryptEntryKeyAsync(appCont, databaseId.ToUtfBytes());
@@ -349,7 +636,7 @@ namespace SAFE.EventStore.Services
                 throw new DatabaseNotFoundException($"Database id {databaseId} does not exist!");
             }
         }
-        
+
         //async Task<List<MDataInfo>> GetAllCategoryInfos(Database database)
         //{
         //    var dbCatPartitionEntries = new ConcurrentBag<MDataInfo>();
@@ -388,29 +675,6 @@ namespace SAFE.EventStore.Services
 
         //    return dbCatPartitionEntries.ToList();
         //}
-
-        public class StreamKey
-        {
-            public StreamKey(string streamKey)
-            {
-                var (streamName, streamId) = GetKeyParts(streamKey);
-                Key = streamKey;
-                StreamName = streamName;
-                StreamId = streamId;
-            }
-
-            public string Key { get; private set; }
-            public string StreamName { get; private set; }
-            public long StreamId { get; private set; }
-
-            (string, long) GetKeyParts(string streamKey)
-            {
-                var source = streamKey.Split('@');
-                var streamName = source[0];
-                var streamId = long.Parse(source[1]);
-                return (streamName, streamId);
-            }
-        }
 
         async Task<MDataInfo> GetCategoryMdInfo(string databaseId, string streamName)
         {
@@ -478,76 +742,6 @@ namespace SAFE.EventStore.Services
             }
         }
 
-
-        async Task<(string, List<byte>)> CreatePartition(StreamKey key, List<byte> serializedStream_MdInfo)
-        {
-            var partitionKey = Partitioner.GetPartition(key.Key, MD_ENTRIES_COUNT).ToString();
-
-            var partitionData = new Dictionary<string, List<byte>>
-            {
-                {
-                    METADATA_KEY, new MDMetaData
-                    {
-                        { "type", "partition" },
-                        { "partitionKey", partitionKey }
-                    }.Json().ToUtfBytes()
-                },
-                {
-                    key.Key,
-                    serializedStream_MdInfo
-                }
-            };
-
-            var partitionInfoBytes = await CreateMd(partitionData);
-
-            return (partitionKey, partitionInfoBytes);
-        }
-
-        async Task CreateCategory(string databaseId, StreamKey key, List<byte> serializedStream_MdInfo)
-        {
-            var (partitionKey, partitionInfoBytes) = await CreatePartition(key, serializedStream_MdInfo);
-            var categoryData = new Dictionary<string, List<byte>>
-            {
-                {
-                    METADATA_KEY, new MDMetaData
-                    {
-                        { "type", "category" },
-                        { "typeName", key.StreamName }
-                    }.Json().ToUtfBytes()
-                },
-                {
-                    partitionKey,
-                    partitionInfoBytes
-                }
-            };
-
-            var categoryInfoBytes = await CreateMd(categoryData);
-
-            var db = await GetDataBase(databaseId);
-            var categoryIndexInfo = await _mDataInfo.DeserialiseAsync(db.Categories.Data);
-            using (var indexEntryActionsH = await _mDataEntryActions.NewAsync())
-            {
-                // create the insert action
-                await _mDataEntryActions.InsertAsync(indexEntryActionsH, key.StreamName.ToUtfBytes(), categoryInfoBytes);
-                await _mData.MutateEntriesAsync(categoryIndexInfo, indexEntryActionsH); // <----------------------------------------------    Commit ------------------------
-            }
-        }
-
-        async Task<List<byte>> CreateMd(Dictionary<string, List<byte>> data)
-        {
-            using (var permissionH = await _mDataPermissions.NewAsync())
-            {
-                using (var appSignPkH = await _crypto.AppPubSignKeyAsync())
-                    await _mDataPermissions.InsertAsync(permissionH, appSignPkH, GetFullPermissions());
-
-                using (var dataEntries = await _mDataEntries.NewAsync())
-                {
-                    await SetDataEntries(dataEntries, data);
-                    return await GetSerialisedMdInfo(permissionH, dataEntries);
-                }
-            }
-        }
-
         async Task<EventData> GetEventDataFromAddress(StoredEvent stored)
         {
             using (var seReaderHandle = await _iData.FetchSelfEncryptorAsync(stored.DataMapAddress.ToArray()))
@@ -568,126 +762,9 @@ namespace SAFE.EventStore.Services
             }
         }
 
-        /// <summary>
-        /// Stores a batch to the stream.
-        /// Will protect stream integrity
-        /// with regards to version.
-        /// 
-        /// TODO: We need to return some richer model
-        /// so that the outer scope can distinguish between version exception
-        /// and other exceptions. This is needed so that ouoter scope can 
-        /// load the new events, apply to state and retry the cmd.
-        /// </summary>
-        /// <param name="databaseId"></param>
-        /// <param name="streamKey"></param>
-        /// <param name="batch"></param>
-        /// <returns></returns>
-        public async Task<Result<bool>> StoreBatchAsync(string databaseId, EventBatch batch)
-        {
-            // Since the streams only have insert permissions,
-            // the version of it will increase in a deterministic manner,
-            // and we can use the sequenceNr of last event in batch, to derive
-            // a version number to supply to the network when mutating the MD.
-            try
-            {
-                var (streamVersion, mdEntryVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
-                if (streamVersion == -1)
-                    await CreateNewStreamAsync(databaseId, batch);
-                else
-                {
-                    var expectedVersion = batch.Body.First().MetaData.SequenceNumber - 1;
-                    if (streamVersion != expectedVersion)
-                        throw new InvalidOperationException($"Concurrency exception! Expected stream version {expectedVersion}, but found {streamVersion}.");
+        #endregion Read
 
-                    return await StoreToExistingStream(databaseId, batch, mdEntryVersion); // todo: distinguish MD version exception result from other errors
-                }
-
-                return Result.OK(true);
-            }
-            catch (Exception ex)
-            {
-                return Result.Fail<bool>(ex.Message);
-            }
-        }
-
-        async Task CreateNewStreamAsync(string databaseId, EventBatch initBatch)
-        {
-            if (initBatch.Body.First().MetaData.SequenceNumber != 0)
-                throw new InvalidOperationException("First event in a new stream must start with sequence Nr 0!");
-
-            var key = new StreamKey(initBatch.StreamKey);
-
-            var categoryExists = true;
-            var streamPartitionExists = true;
-            try
-            {
-                var existing = await GetStreamMdInfo(databaseId, key);
-                throw new InvalidOperationException("Stream already exists!");
-            }
-            catch (CategoryNotFoundException)
-            {
-                categoryExists = false;
-                streamPartitionExists = false;
-            }
-            catch (StreamKeyPartitionNotFoundException)
-            {
-                streamPartitionExists = false;
-            }
-            catch (StreamKeyNotFoundException)
-            { }
-            
-            var jsonBatch = await GetJsonBatch(initBatch);
-
-            var streamData = new Dictionary<string, List<byte>>
-            {
-                {
-                    METADATA_KEY, new MDMetaData
-                    {
-                        { "type", "stream" },
-                        { "streamName", key.StreamName },
-                        { "streamId", key.StreamId.ToString() },
-                    }.Json().ToUtfBytes()
-                },
-                {
-                    GetBatchKey(initBatch),
-                    jsonBatch.ToUtfBytes()
-                },
-                {
-                    VERSION_KEY,
-                    initBatch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes()
-                }
-            };
-
-            var streamInfoBytes = await CreateMd(streamData);
-
-            if (categoryExists)
-            {
-                var categoryInfo = await GetCategoryMdInfo(databaseId, key.StreamName); // if exists, we mutate it
-
-                if (streamPartitionExists)
-                {
-                    var partitionInfo = await GetMdPartitionInfo(categoryInfo, key.Key.ToUtfBytes());
-                    using (var actionHandle = await _mDataEntryActions.NewAsync()) // create the insert action
-                    {
-                        await _mDataEntryActions.InsertAsync(actionHandle, initBatch.StreamKey.ToUtfBytes(), streamInfoBytes);
-                        await _mData.MutateEntriesAsync(partitionInfo, actionHandle); // <----------------------------------------------    Commit ------------------------
-                    }
-                }
-                else
-                {
-                    var (partitionKey, partitionInfoBytes) = await CreatePartition(key, streamInfoBytes);
-
-                    using (var actionHandle = await _mDataEntryActions.NewAsync()) // create the insert action
-                    {
-                        await _mDataEntryActions.InsertAsync(actionHandle, partitionKey.ToUtfBytes(), partitionInfoBytes);
-                        await _mData.MutateEntriesAsync(categoryInfo, actionHandle); // <----------------------------------------------    Commit ------------------------
-                        return;
-                    }
-                }
-            }
-            else
-                await CreateCategory(databaseId, key, streamInfoBytes);
-        }
+        #region Misc
 
         PermissionSet GetFullPermissions()
         {
@@ -700,104 +777,6 @@ namespace SAFE.EventStore.Services
                 Update = true
             };
         }
-
-        async Task SetDataEntries(NativeHandle stream_EntriesH, Dictionary<string, List<byte>> data)
-        {
-            foreach (var pair in data)
-                await _mDataEntries.InsertAsync(stream_EntriesH, pair.Key.ToUtfBytes(), pair.Value);
-        }
-
-        async Task<List<byte>> GetSerialisedMdInfo(NativeHandle permissionsHandle, NativeHandle dataEntries)
-        {
-            var info = await _mDataInfo.RandomPrivateAsync(15001);
-            await _mData.PutAsync(info, permissionsHandle, dataEntries); // <----------------------------------------------    Commit ------------------------
-            return await _mDataInfo.SerialiseAsync(info);
-        }
-
-        async Task<Result<bool>> StoreToExistingStream(string databaseId, EventBatch batch, ulong mdEntryVersion)
-        {
-            // With ImD-Protocol, the entries of a stream, are the 
-            // serialized batch of addresses to ImmutableData
-            // which hold the actual event.
-            var stream_MDataInfo = await GetStreamMdInfo(databaseId, new StreamKey(batch.StreamKey));
-            var batchKey = GetBatchKey(batch);
-            var jsonBatch = await GetJsonBatch(batch); // NB: stores to Immutable data!
-            var newStreamVersion = batch.Body.Last().MetaData.SequenceNumber.ToString().ToUtfBytes();
-            var newMdEntryVersion = mdEntryVersion + 1;
-            using (var streamEntryActionsH = await _mDataEntryActions.NewAsync())
-            {
-                // create the insert action
-                await _mDataEntryActions.InsertAsync(streamEntryActionsH, batchKey.ToUtfBytes(), jsonBatch.ToUtfBytes());
-                await _mDataEntryActions.UpdateAsync(streamEntryActionsH, VERSION_KEY.ToUtfBytes(), newStreamVersion, newMdEntryVersion);
-                // mdEntryVersion gives proper concurrency management of writes to streams.
-                // We can now have multiple concurrent processes writing to the same stream and maintain version sequence intact
-
-                try
-                {
-                    // Finally update md (store batch to it)
-                    await _mData.MutateEntriesAsync(stream_MDataInfo, streamEntryActionsH); // <----------------------------------------------    Commit ------------------------
-                }
-                catch(Exception ex)
-                {
-                    if (ex.Message.Contains("InvalidSuccessor"))
-                    {
-                        var (_, mdVersion) = await GetStreamVersionAsync(databaseId, batch.StreamKey);
-                        return Result.Fail<bool>($"Concurrency exception! Expected MD entry version {mdEntryVersion} is not valid. Current version is {mdVersion}.");
-                    }
-                    return Result.Fail<bool>(ex.Message);
-                }
-                // the exception thrown from MutateEntriesAsync when wrong mdEntryVersion entered (i.e. stream modified since last read)
-                // will have to be handled by the outer scope. Preferred way is to load latest version of stream (i.e. load new events)
-                // and then apply the cmd to the aggregate again. This becomes a bit of a problem in case of doing outgoing requests from within the aggregate
-                // as we might not want to do those requests again (depending on their idempotency at the remote recipient).
-                // implementing logic where an outbound non-idempotent request has to be done, will be risky unless managed.
-                // currently not aware of a well established pattern for this
-                // one way could be to run it over multiple cmds, so that we first set the AR to be in a receiving state, 
-                // => (SetReceiving), from here it should reject additional SetReceiving cmds, and only accept 
-                // the cmd which performs the outbound request, if it is issued by the same causer (i.e. making it single threaded).
-            }
-
-            return Result.OK(true);
-        }
-
-        // reconsider method name here, as it currently is obfuscating the fact that
-        // state is written to the network with this action (ImD created).
-        async Task<string> GetJsonBatch(EventBatch batch)
-        {
-            var imd = new ConcurrentBag<object>();
-
-            var tasks = batch.Body.Select(async x =>
-            {
-                imd.Add(new StoredEvent
-                {
-                    MetaData = x.MetaData,
-                    DataMapAddress = await StoreImmutableData(x.Payload)
-                });
-            });
-
-            await Task.WhenAll(tasks);
-
-            var jsonBatch = imd.ToList().Json(); // to list might not be necessary here
-
-            return jsonBatch;
-        }
-
-        // returns data map address
-        async Task<byte[]> StoreImmutableData(byte[] payload)
-        {
-            using (var cipherOptHandle = await _cipherOpt.NewPlaintextAsync())
-            {
-                using (var seWriterHandle = await _iData.NewSelfEncryptorAsync())
-                {
-                    await _iData.WriteToSelfEncryptorAsync(seWriterHandle, payload.ToList());
-                    var dataMapAddress = await _iData.CloseSelfEncryptorAsync(seWriterHandle, cipherOptHandle);
-                    return dataMapAddress;
-                }
-            }
-        }
-
-
-        #region Helpers
 
         class MDMetaData : Dictionary<string, string>
         { }
@@ -853,6 +832,29 @@ namespace SAFE.EventStore.Services
             return (encPublicKey, encSecretKey);
         }
 
-        #endregion Helpers
+        public class StreamKey
+        {
+            public StreamKey(string streamKey)
+            {
+                var (streamName, streamId) = GetKeyParts(streamKey);
+                Key = streamKey;
+                StreamName = streamName;
+                StreamId = streamId;
+            }
+
+            public string Key { get; private set; }
+            public string StreamName { get; private set; }
+            public long StreamId { get; private set; }
+
+            (string, long) GetKeyParts(string streamKey)
+            {
+                var source = streamKey.Split('@');
+                var streamName = source[0];
+                var streamId = long.Parse(source[1]);
+                return (streamName, streamId);
+            }
+        }
+
+        #endregion Misc
     }
 }

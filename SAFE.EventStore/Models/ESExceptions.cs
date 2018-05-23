@@ -16,13 +16,6 @@ namespace SAFE.EventStore
         { }
     }
 
-    public class CategoryPartitionNotFoundException : Exception
-    {
-        public CategoryPartitionNotFoundException(string msg)
-            : base(msg)
-        { }
-    }
-
     public class StreamKeyNotFoundException : Exception
     {
         public StreamKeyNotFoundException(string msg)
